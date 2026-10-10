@@ -1,0 +1,6 @@
+interface:
+  display_name: "PaperBanana RFS Engine"
+  short_description: "Scientific diagrams with canonical RFS exchange"
+  default_prompt: "Use $paperbanana to generate a scientifically grounded diagram and preserve its complete RFS exchange bundle."
+policy:
+  allow_implicit_invocation: true

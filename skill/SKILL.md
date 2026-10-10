@@ -1,101 +1,39 @@
 ---
 name: paperbanana
-description: Generate scientific diagrams and real-data plots with the five-agent PaperBanana pipeline, and export versioned RFS reconstruction bundles.
+description: >-
+  Generate scientific method, architecture and overview diagrams with PaperBanana's five-agent engine; export full FigureSpec v1, actual image, exact prompt and written design for RFS reconstruction. Use when PaperBanana is explicitly requested or the research-figure orchestrator delegates generation. Do not use to recreate an approved figure as native PPTX, to invent experimental measurements, or to repeat a completed generative design stage.
 license: Apache-2.0
+compatibility: Installed PaperBanana checkout and configured model provider for generation; Python 3.10+ plus jsonschema and Pillow for offline exchange. Full generation is tested on Python 3.12.
+metadata:
+  version: "0.4.0"
+  category: "scientific-figure-engine"
 ---
 
-# PaperBanana research-figure engine
+# PaperBanana engine
 
-Use this engine to design scientific figures from supplied method text or real
-quantitative data. Preserve the Retriever → Planner → Stylist → Visualizer →
-Critic architecture and the original Vanilla/Polish alternatives.
+Preserve Retriever → Planner → Stylist → Visualizer → Critic. Do not add another outer agent loop with the same responsibilities. This engine produces scientific visual references and detailed written design, not native editable slides.
 
-## Before generation
+## Resolve runtime and scope
 
-1. Read the source material, desired figure purpose and any supplied FigureSpec.
-   Never invent experimental measurements or scientific relationships.
-2. Choose explicit text/image model profiles from `configs/model_registry.yaml`.
-   Check capability requirements (vision, structured text, generation or edit).
-   Account access is not guaranteed by the catalog. Do not guess a provider from
-   available keys or silently switch a paid provider.
-3. Configure credentials privately via environment or the git-ignored model
-   YAML. Never include credentials in prompts, artifacts or version control.
-4. Select reference retrieval only if required. `--retrieval-setting none` needs
-   no benchmark download. `--offline` disables dataset downloads, not model API
-   calls. Validate input and configuration before starting remote work.
-5. For plot-code execution, use only trusted input in a disposable environment.
-   A subprocess timeout is not a security sandbox. RFS CLI mode requires
-   `--allow-generated-plot-code`; see `SECURITY.md`.
+Use `PAPERBANANA_ROOT` or an explicitly supplied trusted engine checkout. The installed Skill folder is not the Python runtime. Existing command entrypoints remain `skill/run.py` and `skill/exchange.py` relative to that checkout. Read the root README and `skills/paperbanana/references/exchange.md` there for complete usage.
 
-## Environment
+## Paired RFS request
 
-Python 3.12 is the tested runtime. From the repository root:
+1. Read actual source material and canonical FigureSpec. Never generate measurements or alter supplied topology, formulas, labels, groups, data, evidence or verification status.
+2. Run `python "$PAPERBANANA_ROOT/skill/exchange.py" describe`; let the consumer compare the protocol/version/schema/validator fingerprint. Never bypass a mismatch by converting the spec to plain prose.
+3. Validate the entire bound request using `validate-request --request /project/request.json`. Request preparation and validation must not call a provider.
+4. Only with authorization for the current material and potential fees, call `run --request /project/request.json --allow-external`. Select explicit configured model profiles; do not guess from model names or key availability. Never switch paid providers silently. Do not log/publish credentials or unpublished sources.
+5. Preserve images, exact selected-stage prompts, detailed design and full FigureSpec in the versioned manifest. A failed review is not a success; prior valid images may be retained with failure status. Use a fresh request/output directory.
+6. Return the actual bundle locations and explicit status to RFS. The consumer validates its original scientific fingerprint and all artifact bytes. Do not fabricate a consumer acceptance, blind review or native-editability result.
 
-```sh
-python -m pip install -r requirements.txt
-python skill/run.py --help
-```
+## Design quality and repair
 
-CLI options override environment values, then YAML, then registry defaults.
-For a new/unknown model use an explicit `model_profiles` capability declaration,
-not a name-based assumption. Model IDs and limits belong in the registry rather
-than this skill document.
+Use professional scientific prompts covering complete science, visual hierarchy, composition/regions, exact typography, connector lanes, and specific forbidden changes. Image model capabilities and current API parameters require actual provider verification. Local editing requires a real reference and supported editing operation; do not silently regenerate the whole composition. Preserve every non-target entity and inspect the actual edited output.
 
-## Generate RFS candidates
+Detailed design text describes intended composition. It is not evidence that the generated image exactly followed the plan. After selection, RFS must inspect that specific image and write image-bound observed reconstruction notes. Only then can an available native builder perform faithful reconstruction.
 
-```sh
-python skill/run.py \
-  --content-file method.txt --caption "Scientific architecture overview" \
-  --task diagram --render-mode rfs --retrieval-setting none \
-  --num-candidates 3 --max-concurrent 2 \
-  --output output/figure.png --rfs-output-dir output/rfs \
-  --checkpoint-dir output/checkpoints
-```
+## Numeric data, legacy mode and evidence
 
-Add `--rfs-file specification.json` to lock an existing FigureSpec while keeping
-its original source input. Schema and illustrative fixtures are in `rfs/`.
-Use `--render-mode legacy` for existing image-only contracts. Statistical plots
-use `--task plot` and actual supplied numeric content. Do not assume the image
-backend and the plotting-code backend support the same repair operations.
+The paired canonical endpoint accepts diagrams only. Quantitative/hybrid data panels are routed to deterministic source-data plotting by RFS. Standalone legacy plotting remains available but executes generated Python; subprocess/timeouts are not a sandbox. Use only trusted isolated single-user execution and the required explicit opt-in. Reference download `--offline` is not offline image generation.
 
-## Scientific and visual responsibilities
-
-- FigureSpec records scientific entities, exact labels, directed edges, groups,
-  source evidence, data and protected constraints.
-- The image is the appearance reference; detailed design text explains the
-  composition and local decisions. None replaces source evidence.
-- Candidate variation changes presentation while preserving locked science.
-- Local image repair requires an actual reference and a model with edit support.
-  Do not silently substitute text-only regeneration. Protected pixels must still
-  be inspected; a prompt cannot guarantee pixel-identical preservation.
-- A malformed plan/review is a failure, not approval or “No changes needed.”
-- Model-proposed structure remains unverified. A valid schema or attractive image
-  does not prove scientific correctness.
-
-## Deliverables and recovery
-
-Each RFS candidate has a versioned manifest and image, exact prompt, design
-instructions, FigureSpec and hashes. Preserve alpha/original bytes when possible.
-The selected prompt/spec must describe the selected image's actual stage.
-Keep failures explicit and keep valid prior artifacts without relabelling them
-as fully reviewed successes. Verify bundle hashes before reuse.
-
-Resume with the same source/configuration and `--resume --checkpoint-dir ...`.
-Only matching successful candidates are reused; failed candidates may incur new
-provider requests. API timeouts may have an unknown provider-side outcome.
-Never overwrite unrelated artifacts or assume arrival order is candidate order.
-
-The external RFS editable-reconstruction consumer is separate. This repository
-provides a public versioned exchange contract, not verified native PPTX/draw.io
-output. Consult `docs/RFS_GUIDE.md` and `rfs/README.md` for integration details.
-
-## Verification
-
-```sh
-python -m pip install -r requirements-dev.txt
-python -m pip check
-python -m pytest -q
-```
-
-Controlled-transport tests validate software behavior. Do not describe them as
-live provider generation, scientific-result validation or external consumer QA.
+Report software integrity, scientific validity, visual fidelity, actual model execution and native reconstruction separately. Protocol tests use synthetic fixtures and do not certify model image quality. Keep private internal notes and generated artifacts outside the public source tree.
