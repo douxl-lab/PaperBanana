@@ -142,7 +142,7 @@ def test_result_counts_do_not_count_failed_records_with_last_good_pixels():
 
 def test_atomic_json_unique_paths_and_no_credentials(tmp_path):
     value = [{"api_keys": {"openai_api_key": "fixture-secret"},
-              "note": "provider sk-abcdefghijklmnopqrstuvwxyz01234567", "status": "failed"}]
+              "note": "provider " + "sk-" + "abcdefghijklmnopqrstuvwxyz01234567", "status": "failed"}]
     first, second = save_results_json(value, tmp_path), save_results_json(value, tmp_path)
     assert first != second
     stored = json.loads(first.read_text())
@@ -191,7 +191,7 @@ def test_malformed_evaluation_cannot_be_a_pass(monkeypatch, tmp_path, winner):
 
 def test_evaluation_provider_failure_is_safe_and_not_a_tie(monkeypatch, tmp_path):
     async def router(**kwargs):
-        raise RuntimeError("Fixture private details sk-abcdefghijklmnopqrstuvwxyz01234567")
+        raise RuntimeError("Fixture private details " + "sk-" + "abcdefghijklmnopqrstuvwxyz01234567")
     monkeypatch.setattr(evaluation, "call_model_with_retry_async", router)
     actual = asyncio.run(evaluation.get_score_for_image_referenced(evaluation_sample(tmp_path), work_dir=tmp_path))
     assert actual["evaluation_status"] == "failed" and actual["overall_outcome"] == "Error"
