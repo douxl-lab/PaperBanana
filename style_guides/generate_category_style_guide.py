@@ -16,8 +16,8 @@ import asyncio
 import os
 import json
 import pathlib
-from google import genai
-from google.genai import types
+import base64
+import sys
 from tqdm.asyncio import tqdm
 
 # ================= 1. Configuration =================
@@ -28,20 +28,20 @@ WORK_DIR = pathlib.Path(__file__).parent.parent
 DATA_DIR = WORK_DIR / f"data/PaperBananaBench/{MODE}"
 
 INPUT_JSON_PATH = WORK_DIR / f"data/PaperBananaBench/{MODE}/ref.json"
-OUTPUT_REPORT_PATH = f"style_guides/neurips2025_{MODE}_style_guide.md"
-BATCH_OUTPUT_DIR = "tmp/style_analysis_all"
+OUTPUT_REPORT_PATH = WORK_DIR / f"style_guides/neurips2025_{MODE}_style_guide.md"
+BATCH_OUTPUT_DIR = WORK_DIR / "tmp/style_analysis_all"
 
 # Sampling settings
 NUM_SAMPLES = 50  # None for all, or a number to limit
 
-MODEL_NAME = "gemini-3-pro-preview"
+MODEL_NAME = None  # Use configured main model / registry default unless explicitly selected.
 
 # Batch processing settings
 BATCH_SIZE = 20
 CONCURRENCY_LIMIT = 5
 
-# ================= 2. Initialize Client =================
-client = genai.Client()
+# No API client or network request is created when this module is imported.
+sys.path.insert(0, str(WORK_DIR))
 
 # ================= 3. Improved Prompt Design =================
 
@@ -174,130 +174,112 @@ else:
 
 # ================= 4. Core Logic =================
 
-async def analyze_batch(sem, batch_index, image_paths):
-    """Analyze a batch of images for visual patterns"""
-    async with sem:
-        valid_parts = []
-        loaded_count = 0
-        
-        # Load images
-        for p in image_paths:
-            try:
-                path_obj = pathlib.Path(p)
-                if path_obj.exists():
-                    file_bytes = path_obj.read_bytes()
-                    mime = "image/png" if p.lower().endswith(".png") else "image/jpeg"
-                    valid_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime))
-                    loaded_count += 1
-            except Exception as e:
-                print(f"Error reading {p}: {e}")
-        
-        if not valid_parts:
-            return f"[Batch {batch_index}] Skipped: No valid images found."
-        
-        # Call Gemini for visual analysis
-        contents = valid_parts + [BATCH_ANALYSIS_PROMPT]
-        
-        try:
-            response = await client.aio.models.generate_content(
-                model=MODEL_NAME,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    temperature=1,
-                    max_output_tokens=50000
-                ),
-            )
-            
-            report_content = response.text
-            
-            # Save intermediate results
-            output_filename = os.path.join(BATCH_OUTPUT_DIR, f"batch_{batch_index}.txt")
-            with open(output_filename, "w", encoding="utf-8") as f:
-                f.write(report_content)
-            
-            return f"=== Batch {batch_index} Analysis ({loaded_count} images) ===\n{report_content}\n"
-        
-        except Exception as e:
-            error_msg = f"Error in Batch {batch_index}: {str(e)}"
-            print(error_msg)
-            return f"=== {error_msg} ===\n"
+async def _generate_report(contents, model_name=None, provider=None, max_output_tokens=16000):
+    from utils.config import ExpConfig
+    from utils.generation_utils import call_model_with_retry_async
+    from utils.model_registry import resolve_model
 
-async def main_task():
-    """Main async task"""
-    # Step 0: Prepare output directory
-    os.makedirs(BATCH_OUTPUT_DIR, exist_ok=True)
-    os.makedirs(os.path.dirname(OUTPUT_REPORT_PATH), exist_ok=True)
-    print(f"📁 Output directory: {BATCH_OUTPUT_DIR}")
-    
-    # Step 1: Load and filter data
-    print(f"📂 Loading {INPUT_JSON_PATH}...")
-    with open(INPUT_JSON_PATH, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    # Extract image paths and resolve relative paths
+    settings = ExpConfig(dataset_name="PaperBananaBench", work_dir=WORK_DIR, task_name=MODE,
+                         main_model_name=model_name or MODEL_NAME or "")
+    model_name = settings.main_model_name
+    resolve_model(model_name, provider=provider, operation="text", overrides=settings.model_profiles)
+    responses = await call_model_with_retry_async(
+        model_name=model_name, provider=provider, overrides=settings.model_profiles, contents=contents,
+        config={"system_prompt": "", "temperature": 1.0, "candidate_num": 1,
+                "max_output_tokens": max_output_tokens},
+        max_attempts=3, retry_delay=1, error_context="style_guide_analysis",
+    )
+    if not responses or not isinstance(responses[0], str) or not responses[0].strip() or responses[0] == "Error":
+        raise ValueError("Style analysis returned no usable text")
+    return responses[0]
+
+
+async def analyze_batch(sem, batch_index, image_paths, model_name=None, provider=None):
+    """Analyze valid reference pixels through the shared multimodal text router."""
+    from utils.legacy_ui_refinement import image_mime_type, atomic_write
+    async with sem:
+        images = []
+        for path in image_paths:
+            try:
+                pixels = pathlib.Path(path).read_bytes()
+                mime = image_mime_type(pixels)
+                images.append({"type": "image", "source": {
+                    "type": "base64", "media_type": mime,
+                    "data": base64.b64encode(pixels).decode("ascii"),
+                }})
+            except (OSError, ValueError) as exc:
+                print(f"Reference omitted: {path} ({type(exc).__name__})")
+        if not images:
+            return None
+        try:
+            report = await _generate_report(
+                images + [{"type": "text", "text": BATCH_ANALYSIS_PROMPT}],
+                model_name, provider,
+            )
+            atomic_write(pathlib.Path(BATCH_OUTPUT_DIR) / f"batch_{batch_index}.txt", report.encode("utf-8"))
+            return f"=== Batch {batch_index} Analysis ({len(images)} images) ===\n{report}\n"
+        except Exception as exc:
+            print(f"Batch {batch_index} failed ({type(exc).__name__}); no report used for synthesis.")
+            return None
+
+
+async def main_task(model_name=None, provider=None):
+    """Generate an aesthetic guide using only successfully analyzed references."""
+    from utils.legacy_ui_refinement import atomic_write
+    input_path = pathlib.Path(INPUT_JSON_PATH)
+    output_path = pathlib.Path(OUTPUT_REPORT_PATH)
+    if not output_path.is_absolute():
+        output_path = WORK_DIR / output_path
+    with input_path.open(encoding="utf-8") as source:
+        data = json.load(source)
     all_image_paths = []
     for item in data:
-        path_rel = item.get('path_to_gt_image')
-        if path_rel:
-            # Resolve relative path using DATA_DIR
-            path = DATA_DIR / path_rel
+        raw = item.get("path_to_gt_image")
+        if raw:
+            path = pathlib.Path(raw)
+            if not path.is_absolute():
+                path = DATA_DIR / path
             if path.exists():
-                all_image_paths.append(str(path))
-    
-    print(f"📸 Found {len(all_image_paths)} valid image paths")
-    
-    # Apply sampling limit
+                all_image_paths.append(path)
     if NUM_SAMPLES is not None:
         all_image_paths = all_image_paths[:NUM_SAMPLES]
-        print(f"✂️  Limiting to first {NUM_SAMPLES} samples")
-    
     if not all_image_paths:
-        print("❌ No valid images found")
-        return
-    
-    # Step 2: Split into batches
-    batches = [all_image_paths[i:i + BATCH_SIZE] 
-               for i in range(0, len(all_image_paths), BATCH_SIZE)]
-    print(f"📦 Split into {len(batches)} batches (size: {BATCH_SIZE})")
-    
-    # Step 3: Parallel analysis
-    print(f"🚀 Starting visual analysis...")
+        raise ValueError("No reference images found; no guide was generated")
+    if BATCH_SIZE < 1 or CONCURRENCY_LIMIT < 1:
+        raise ValueError("Batch size and concurrency must be positive")
+    batches = [all_image_paths[i:i + BATCH_SIZE] for i in range(0, len(all_image_paths), BATCH_SIZE)]
     sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    tasks = [analyze_batch(sem, i, b) for i, b in enumerate(batches)]
-    
-    batch_reports = await tqdm.gather(*tasks, desc="Analyzing Batches")
-    
-    # Step 4: Synthesize final style guide
-    print("\n🧠 Synthesizing final style guide...")
-    combined_text = "\n\n".join(batch_reports)
-    
-    try:
-        final_response = await client.aio.models.generate_content(
-            model=MODEL_NAME,
-            contents=[FINAL_SUMMARY_PROMPT.format(
-                num_batches=len(batches),
-                all_reports=combined_text
-            )],
-            config=types.GenerateContentConfig(
-                temperature=1.0,
-                max_output_tokens=16000
-            ),
-        )
-        
-        # Save final style guide
-        with open(OUTPUT_REPORT_PATH, 'w', encoding='utf-8') as f:
-            f.write(final_response.text)
-        
-        print(f"\n🎉 Success! Style guide saved to: {OUTPUT_REPORT_PATH}")
-        print("="*80)
-        print("Preview:")
-        print("="*80)
-        print(final_response.text[:800] + "...\n")
-        print(f"(See full content in {OUTPUT_REPORT_PATH})")
-        
-    except Exception as e:
-        print(f"❌ Error during synthesis: {e}")
+    reports = await tqdm.gather(*[
+        analyze_batch(sem, i, batch, model_name, provider) for i, batch in enumerate(batches)
+    ], desc="Analyzing Batches")
+    valid_reports = [report for report in reports if report]
+    if not valid_reports:
+        raise RuntimeError("All style-analysis batches failed; no guide was generated")
+    if len(valid_reports) < len(reports):
+        print(f"Coverage warning: {len(valid_reports)}/{len(reports)} batches analyzed successfully.")
+    final_report = await _generate_report([
+        {"type": "text", "text": FINAL_SUMMARY_PROMPT.format(
+            num_batches=len(valid_reports), all_reports="\n\n".join(valid_reports),
+        )},
+    ], model_name, provider)
+    atomic_write(output_path, final_report.encode("utf-8"))
+    print(f"Style guide saved: {output_path}. Aesthetic observations are not scientific validation.")
+    return output_path
 
-# ================= 5. Entry Point =================
+
 if __name__ == "__main__":
-    asyncio.run(main_task())
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate a reference-based aesthetic style guide")
+    parser.add_argument("--task", choices=("diagram", "plot"), default=MODE)
+    parser.add_argument("--model", default=None, help="Registry model or explicit provider/model ID")
+    parser.add_argument("--provider", choices=("gemini", "openai", "anthropic", "openrouter"), default=None)
+    parser.add_argument("--input-json", type=pathlib.Path, default=None)
+    parser.add_argument("--output", type=pathlib.Path, default=None)
+    args = parser.parse_args()
+    MODE = args.task
+    DATA_DIR = WORK_DIR / f"data/PaperBananaBench/{MODE}"
+    INPUT_JSON_PATH = args.input_json or DATA_DIR / "ref.json"
+    OUTPUT_REPORT_PATH = args.output or WORK_DIR / f"style_guides/neurips2025_{MODE}_style_guide.md"
+    BATCH_ANALYSIS_PROMPT = PLOT_BATCH_ANALYSIS_PROMPT if MODE == "plot" else DIAGRAM_BATCH_ANALYSIS_PROMPT
+    FINAL_SUMMARY_PROMPT = PLOT_FINAL_SUMMARY_PROMPT if MODE == "plot" else DIAGRAM_FINAL_SUMMARY_PROMPT
+    asyncio.run(main_task(args.model, args.provider))

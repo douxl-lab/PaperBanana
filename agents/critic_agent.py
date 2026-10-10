@@ -25,6 +25,9 @@ import json_repair
 
 from utils import generation_utils
 from .base_agent import BaseAgent
+from rfs.contract import is_rfs_enabled, RFSValidationError
+from rfs.agent_contract import STRUCTURED_SYSTEM_SUPPLEMENT, critic_instructions, parse_critic_response
+import copy
 
 
 class CriticAgent(BaseAgent):
@@ -113,33 +116,46 @@ class CriticAgent(BaseAgent):
             "text": f"Detailed Description: {detailed_description}\n{cfg['context_labels'][0]}: {content}\n{cfg['context_labels'][1]}: {visual_intent}\nYour Output:",
         })
 
+        rfs_mode = is_rfs_enabled(data, self.exp_config)
+        if rfs_mode:
+            content_list.append({"type": "text", "text": critic_instructions(data)})
         response_list = await generation_utils.call_model_with_retry_async(
             model_name=self.model_name,
             contents=content_list,
             config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
+                system_instruction=self.system_prompt + (STRUCTURED_SYSTEM_SUPPLEMENT if rfs_mode else ""),
                 temperature=self.exp_config.temperature,
                 candidate_count=1,
                 max_output_tokens=50000,
             ),
             max_attempts=5,
             retry_delay=5,
+            provider=getattr(self.exp_config, "main_model_provider", None) or None,
+            overrides=getattr(self.exp_config, "model_profiles", None),
+            timeout=getattr(self.exp_config, "candidate_timeout_seconds", 600),
+            total_timeout=getattr(self.exp_config, "candidate_timeout_seconds", 600),
         )
         
-        cleaned_response = (
-            response_list[0].replace("```json", "").replace("```", "").strip()
+        if not response_list:
+            raise RFSValidationError("Critic returned no review response")
+        eval_result = parse_critic_response(
+            response_list[0], spec=data["figure_spec"] if rfs_mode else None,
+            image_available=bool(image_base64 and len(image_base64) > 100),
         )
-        try:
-            eval_result = json_repair.loads(cleaned_response)
-            if not isinstance(eval_result, dict):
-                eval_result = {}
-        except Exception as e:
-            eval_result = {}
-            print(e, cleaned_response)
+        critic_suggestions = eval_result["critic_suggestions"]
+        revised_description = eval_result["revised_description"]
+        data["critic_review_status"] = "valid"
+        if rfs_mode:
+            data["rfs_repair"] = eval_result["repair"]
+            data.setdefault("rfs_reviews", []).append({
+                "round": round_idx, "source": desc_key, "suggestions": critic_suggestions,
+                "revised_description": revised_description, "repair": copy.deepcopy(eval_result["repair"]),
+                "visual_image_available": bool(image_base64 and len(image_base64) > 100),
+                "scientific_verification": "unverified", "review_kind": "model_visual_review",
+            })
+            data["rfs_design_description"] = detailed_description if revised_description == "No changes needed." else revised_description
+            data.setdefault("rfs_stage_specs", {})[f"target_{task_name}_critic_desc{round_idx}"] = copy.deepcopy(data["figure_spec"])
 
-        critic_suggestions = eval_result.get("critic_suggestions", "No changes needed.")
-        revised_description = eval_result.get("revised_description", "No changes needed.")
-        
         data[f"target_{task_name}_critic_suggestions{round_idx}"] = critic_suggestions
         data[f"target_{task_name}_critic_desc{round_idx}"] = revised_description
 
@@ -185,7 +201,7 @@ Provide your response strictly in the following JSON format.
 ```json
 {
     "critic_suggestions": "Insert your detailed critique and specific suggestions for improvement here. If the diagram is perfect, write 'No changes needed.'",
-    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'",
+    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'"
 }
 ```
 """
@@ -229,7 +245,7 @@ Provide your response strictly in the following JSON format.
 ```json
 {
     "critic_suggestions": "Insert your detailed critique and specific suggestions for improvement here. If the plot is perfect, write 'No changes needed.'",
-    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'",
+    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'"
 }
 ```
 """

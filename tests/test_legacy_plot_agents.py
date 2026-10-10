@@ -85,8 +85,8 @@ class LegacyPlotAgentTests(unittest.TestCase):
             with TemporaryDirectory() as tmp:
                 agent = VisualizerAgent(exp_config=self._diagram_config(Path(tmp)))
                 with mock.patch(
-                    "utils.generation_utils.call_gemini_with_retry_async",
-                    mock.AsyncMock(return_value=["png"]),
+                        "utils.generation_utils.call_image_with_retry_async",
+                        mock.AsyncMock(return_value=[self._png_base64()]),
                 ) as call, mock.patch(
                     "agents.visualizer_agent.image_utils.convert_png_b64_to_jpg_b64",
                     mock.Mock(return_value="jpeg"),
@@ -107,16 +107,18 @@ class LegacyPlotAgentTests(unittest.TestCase):
         output, call = asyncio.run(run_agent())
 
         self.assertEqual(output["target_diagram_desc0_base64_jpg"], "jpeg")
-        image_config = call.call_args.kwargs["config"].image_config
-        self.assertEqual(image_config.image_size, "4k")
+        # The common agent interface preserves the legacy size input; provider
+        # adapter tests separately verify conversion to Google's uppercase 4K.
+        image_config = call.call_args.args[2]
+        self.assertEqual(image_config["image_size"], "4k")
 
     def test_vanilla_diagram_uses_requested_image_size(self) -> None:
         async def run_agent():
             with TemporaryDirectory() as tmp:
                 agent = VanillaAgent(exp_config=self._diagram_config(Path(tmp)))
                 with mock.patch(
-                    "utils.generation_utils.call_gemini_with_retry_async",
-                    mock.AsyncMock(return_value=["png"]),
+                        "utils.generation_utils.call_image_with_retry_async",
+                        mock.AsyncMock(return_value=[self._png_base64()]),
                 ) as call, mock.patch(
                     "agents.vanilla_agent.image_utils.convert_png_b64_to_jpg_b64",
                     mock.Mock(return_value="jpeg"),
@@ -137,8 +139,8 @@ class LegacyPlotAgentTests(unittest.TestCase):
         output, call = asyncio.run(run_agent())
 
         self.assertEqual(output["vanilla_diagram_base64_jpg"], "jpeg")
-        image_config = call.call_args.kwargs["config"].image_config
-        self.assertEqual(image_config.image_size, "4k")
+        image_config = call.call_args.args[2]
+        self.assertEqual(image_config["image_size"], "4k")
 
     def _plot_config(self, work_dir: Path) -> ExpConfig:
         return ExpConfig(
@@ -146,8 +148,8 @@ class LegacyPlotAgentTests(unittest.TestCase):
             task_name="plot",
             exp_mode="vanilla",
             retrieval_setting="none",
-            main_model_name="mock-main-model",
-            image_gen_model_name="mock-image-model",
+            main_model_name="gemini-3.8-flash",
+            image_gen_model_name="gemini-3.1-flash-image",
             work_dir=work_dir,
         )
 
@@ -157,8 +159,8 @@ class LegacyPlotAgentTests(unittest.TestCase):
             task_name="diagram",
             exp_mode="vanilla",
             retrieval_setting="none",
-            main_model_name="mock-main-model",
-            image_gen_model_name="mock-image-model",
+            main_model_name="gemini-3.8-flash",
+            image_gen_model_name="gemini-3.1-flash-image",
             work_dir=work_dir,
         )
 
@@ -177,6 +179,11 @@ class LegacyPlotAgentTests(unittest.TestCase):
             self.assertEqual(image.format, "JPEG")
             self.assertGreater(image.width, 100)
             self.assertGreater(image.height, 80)
+
+    def _png_base64(self):
+        output = io.BytesIO()
+        Image.new("RGBA", (128, 96), (20, 30, 40, 100)).save(output, format="PNG")
+        return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 if __name__ == "__main__":

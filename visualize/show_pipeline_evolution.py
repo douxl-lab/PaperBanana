@@ -24,9 +24,16 @@ from io import BytesIO
 from PIL import Image
 import os
 import sys
+from pathlib import Path
 
 # Ensure local imports work
-sys.path.append(os.getcwd())
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+from utils.legacy_ui_results import (
+    infer_task_name, build_evolution_stages, resolve_final_output,
+    resolve_display_mode_output, resolve_gt_image_path,
+)
+from utils.legacy_ui_refinement import final_image, summarize_results
 
 st.set_page_config(layout="wide", page_title="PaperVizAgent Pipeline Evolution", page_icon="🍌")
 
@@ -79,77 +86,27 @@ def base64_to_image(b64_str):
         return None
 
 def detect_task_type(item):
-    """Detect whether data is for diagram or plot task."""
-    # Check for plot-specific fields
-    if "target_plot_desc0" in item or "target_plot_stylist_desc0" in item:
-        return "plot"
-    return "diagram"
+    return infer_task_name(item)
 
-def display_stage_comparison(item):
+
+
+def display_stage_comparison(item, results_file_path=None):
     """Display 2x2 grid comparison: Ground Truth + three pipeline stages."""
     st.markdown("### 📊 Pipeline Evolution Comparison")
     
     task_type = detect_task_type(item)
     prefix = "target_plot" if task_type == "plot" else "target_diagram"
     
-    # Create two rows with two columns each
-    row1_col1, row1_col2 = st.columns(2)
-    row2_col1, row2_col2 = st.columns(2)
-    
-    # Detect available stages dynamically
-    available_stages = []
-    
-    # Human (Ground Truth) - always first
-    available_stages.append({
-        "title": "🎯 Human (Ground Truth)",
-        "desc_key": None,
-        "img_key": "annotation_info",
-        "color": "orange",
-        "is_human": True
-    })
-    
-    # Planner / Vanilla
-    planner_key = f"{prefix}_desc0"
-    if planner_key in item:
-        available_stages.append({
-            "title": "📝 Planner / Vanilla",
-            "desc_key": planner_key,
-            "img_key": f"{planner_key}_base64_jpg",
-            "color": "blue",
-            "is_human": False
-        })
-    
-    # Stylist
-    stylist_key = f"{prefix}_stylist_desc0"
-    if stylist_key in item:
-        available_stages.append({
-            "title": "✨ Stylist",
-            "desc_key": stylist_key,
-            "img_key": f"{stylist_key}_base64_jpg",
-            "color": "violet",
-            "is_human": False
-        })
-    
-    # Critic rounds (0, 1, 2)
-    for round_idx in range(3):
-        critic_desc_key = f"{prefix}_critic_desc{round_idx}"
-        if critic_desc_key in item:
-            emoji = ["🔍", "🔍🔍", "🔍🔍🔍"][round_idx]
-            available_stages.append({
-                "title": f"{emoji} Critic Round {round_idx}",
-                "desc_key": critic_desc_key,
-                "img_key": f"{critic_desc_key}_base64_jpg",
-                "suggestions_key": f"{prefix}_critic_suggestions{round_idx}",
-                "color": "green",
-                "is_human": False,
-                "round_idx": round_idx
-            })
-            
-    # Create dynamic grid based on number of stages
+    available_stages = [{"title": "🎯 Human (Ground Truth)", "is_human": True}]
+    for stage in build_evolution_stages(item):
+        available_stages.append({**stage, "title": stage["name"],
+                                 "img_key": stage["image_key"], "is_human": False})
+    if item.get("status") == "failed":
+        st.warning("Generation failed. Any available intermediate images are retained for inspection.")
     num_stages = len(available_stages)
     cols_per_row = 2
     stages = available_stages
-    
+
     # Display stages in a grid
     for row_start in range(0, num_stages, cols_per_row):
         cols = st.columns(cols_per_row)
@@ -165,7 +122,8 @@ def display_stage_comparison(item):
                 # Display image
                 if stage["is_human"]:
                     # Handle Human (Ground Truth) image
-                    human_path = item.get("path_to_gt_image")
+                    human_path = resolve_gt_image_path(item, task_name=task_type,
+                                                        results_file_path=results_file_path, repo_root=REPO_ROOT)
                     if human_path and os.path.exists(human_path):
                         try:
                             img = Image.open(human_path)
@@ -176,7 +134,7 @@ def display_stage_comparison(item):
                         st.info("No Human image available")
                     
                     # Show caption instead of description
-                    caption = item.get("brief_desc", "No caption available")
+                    caption = item.get("visual_intent") or item.get("caption") or item.get("brief_desc", "No caption available")
                     with st.expander("View Caption", expanded=False):
                         st.write(caption)
                 else:
@@ -192,7 +150,7 @@ def display_stage_comparison(item):
                         st.info("No image available")
                     
                     # Display description in expander
-                    desc = item.get(stage["desc_key"], "No description available")
+                    desc = item.get(stage.get("desc_key", ""), "No description available")
                     with st.expander("View Description", expanded=False):
                         if task_type == "plot" and desc:
                              # Try to format as code if it looks like code, or just text
@@ -203,7 +161,7 @@ def display_stage_comparison(item):
                     # Display critic suggestions if this is a critic stage
                     if "suggestions_key" in stage:
                         suggestions = item.get(stage["suggestions_key"], "")
-                        if suggestions and suggestions.strip() != "No changes needed.":
+                        if isinstance(suggestions, str) and suggestions.strip() != "No changes needed.":
                             with st.expander("💬 Critic Suggestions", expanded=False):
                                 st.write(suggestions)
 
@@ -265,7 +223,7 @@ def main():
     # --- Search Functionality ---
     search_query = st.sidebar.text_input("🔍 Search ID", value="", help="Filter by ID (case-insensitive)")
     if search_query:
-        data = [item for item in data if search_query.lower() in item.get("id", "").lower()]
+        data = [item for item in data if search_query.lower() in str(item.get("id", "")).lower()]
         st.sidebar.caption(f"Found {len(data)} matching cases")
     
     total_items = len(data)
@@ -286,27 +244,12 @@ def main():
     with st.expander("📊 Global Statistics", expanded=False):
         total = len(data)
         
-        # Simple heuristic: inspect the first item to guess task type for stats
-        # (This assumes the file is consistent)
-        sample = data[0] if data else {}
-        is_plot = "target_plot_desc0" in sample or "target_plot_stylist_desc0" in sample
-        
-        if is_plot:
-            has_all_stages = sum(1 for item in data if 
-                item.get("target_plot_desc0") and 
-                item.get("target_plot_stylist_desc0") and 
-                item.get("target_plot_critic_desc0"))
-        else:
-            has_all_stages = sum(1 for item in data if 
-                item.get("target_diagram_desc0") and 
-                item.get("target_diagram_stylist_desc0") and 
-                item.get("target_diagram_critic_desc0"))
-        
+        counts = summarize_results(data)
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Samples", total)
-        col2.metric("Complete Pipeline", has_all_stages)
-        col3.metric("Completion Rate", f"{has_all_stages/total*100:.1f}%")
-    
+        col2.metric("Succeeded", counts["success"])
+        col3.metric("Failed / Incomplete", counts["failed"] + counts["incomplete"])
+
     st.divider()
     
     # --- Pagination ---
@@ -315,6 +258,7 @@ def main():
         st.session_state.page = 0
     
     total_pages = max((total_items + PAGE_SIZE - 1) // PAGE_SIZE, 1)
+    st.session_state.page = min(st.session_state.page, total_pages - 1)
     
     # Navigation buttons
     col_left, col_center, col_right = st.columns([1, 2, 1])
@@ -370,7 +314,7 @@ def main():
                     st.markdown(method_content)
             
             # Pipeline comparison
-            display_stage_comparison(item)
+            display_stage_comparison(item, results_file_path=file_path)
             
             # Critique
             display_critique(item)

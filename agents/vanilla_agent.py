@@ -12,152 +12,106 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Vanilla Agent - Directly rendering images based on the method section and diagram caption,
-or writing code to generate plots based on the raw data and plot caption.
-"""
+"""Direct image or explicitly trusted generated-plot rendering."""
+from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor
-from typing import Dict, Any
-from google.genai import types
 import asyncio
 import json
+from typing import Any, Dict
 
 from utils import generation_utils, image_utils
 from utils.legacy_generation_options import image_size_from_data
-from utils.plot_execution import execute_plot_code_worker
+from utils.model_registry import resolve_model
+from utils.plot_execution import execute_plot_code_async, LegacyExecutorHandle
 from .base_agent import BaseAgent
 
 
 class VanillaAgent(BaseAgent):
-    """Vanilla Agent to generate images based on user queries"""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
-        if "plot" in self.exp_config.task_name:
-            self.model_name = self.exp_config.main_model_name
-            self.system_prompt = PLOT_VANILLA_AGENT_SYSTEM_PROMPT
-            self.process_executor = ProcessPoolExecutor(max_workers=32)
-            self.task_config = {
-                "task_name": "plot",
-                "use_image_generation": False,  # Use code generation
-                "content_label": "Plot Raw Data",
-                "visual_intent_label": "Visual Intent of the Desired Plot",
-            }
-        else:
-            self.model_name = self.exp_config.image_gen_model_name
-            self.system_prompt = DIAGRAM_VANILLA_AGENT_SYSTEM_PROMPT
-            self.process_executor = None
-            self.task_config = {
-                "task_name": "diagram",
-                "use_image_generation": True, # Use image generation
-                "content_label": "Method Section",
-                "visual_intent_label": "Diagram Caption",
-            }
+        plot = self.exp_config.task_name == "plot"
+        self.model_name = self.exp_config.main_model_name if plot else self.exp_config.image_gen_model_name
+        self.system_prompt = PLOT_VANILLA_AGENT_SYSTEM_PROMPT if plot else DIAGRAM_VANILLA_AGENT_SYSTEM_PROMPT
+        self.process_executor = LegacyExecutorHandle() if plot else None
+        self.task_config = {"task_name": "plot" if plot else "diagram", "use_image_generation": not plot,
+                            "content_label": "Plot Raw Data" if plot else "Method Section",
+                            "visual_intent_label": "Visual Intent of the Desired Plot" if plot else "Diagram Caption"}
 
-    def __del__(self):
-        if self.process_executor:
-            self.process_executor.shutdown(wait=True)
+    def close(self):
+        if self.process_executor is not None:
+            self.process_executor.shutdown(wait=False)
+            self.process_executor = None
+
+    async def aclose(self):
+        self.close()
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate image based on the user prompt.
-        Supports both diagram (image generation) and plot (matplotlib code generation).
-        """
         cfg = self.task_config
-        
-        raw_content = data["content"]
-        content = json.dumps(raw_content) if isinstance(raw_content, (dict, list)) else raw_content
-        visual_intent = data["visual_intent"]
-        
-        prompt_text = f"**{cfg['content_label']}**: {content}\n**{cfg['visual_intent_label']}**: {visual_intent}\n"
-        if cfg['task_name'] == 'diagram':
-            prompt_text += "Note that do not include figure titles in the image."
-        
-        if cfg["use_image_generation"]:
-            prompt_text += "**Generated Diagram**: "
+        plot = not cfg["use_image_generation"]
+        raw = data["content"]
+        content = json.dumps(raw) if isinstance(raw, (dict, list)) else str(raw)
+        prompt = f"{cfg['content_label']}: {content}\n{cfg['visual_intent_label']}: {data['visual_intent']}\n"
+        prompt += "Write only Python matplotlib code, preserving all supplied values exactly." if plot else "Render the diagram. Do not render the figure caption or title."
+        system = self.system_prompt
+        provider = getattr(self.exp_config, "main_model_provider" if plot else "image_gen_provider", None) or None
+        overrides = getattr(self.exp_config, "model_profiles", None)
+        timeout = getattr(self.exp_config, "candidate_timeout_seconds", 600) or 600
+        rfs_enabled = bool(getattr(self.exp_config, "rfs_enabled", False) or data.get("render_mode") == "rfs")
+        metadata, spec = {}, None
+        if rfs_enabled:
+            from rfs.prompt_compiler import compile_prompt
+            spec = data.get("figure_spec")
+            if not isinstance(spec, dict):
+                raise generation_utils.ModelConfigurationError("RFS vanilla mode requires an explicit FigureSpec")
+            profile = resolve_model(self.model_name, provider, "text" if plot else "image_generate", overrides)
+            compiled = compile_prompt(spec, prompt, profile.compiler_capabilities(), candidate_id=data.get("candidate_id", "0"), stage="candidate")
+            prompt, system, metadata = compiled.prompt, compiled.system_prompt, compiled.metadata
+            if plot:
+                prompt += "\n\nWrite only Python matplotlib code. Use all supplied dataset values exactly; do not invent measurements."
+        options = {"system_prompt": system or "", "temperature": self.exp_config.temperature,
+                   "candidate_count": 1, "max_output_tokens": 8192}
+        stem = f"vanilla_{cfg['task_name']}"
+        if plot:
+            responses = await generation_utils.call_model_with_retry_async(self.model_name, [{"type": "text", "text": prompt}], options,
+                provider=provider, overrides=overrides, timeout=timeout, max_attempts=3, retry_delay=1, total_timeout=timeout)
+            data[stem + "_code"] = responses[0]
+            encoded = await execute_plot_code_async(responses[0], dpi=300,
+                timeout=self.exp_config.plot_timeout_seconds, allow_execution=self.exp_config.allow_generated_plot_code)
+            if not encoded:
+                raise generation_utils.GenerationResponseError("Generated code produced no plot", category="plot_render")
+            data[stem + "_base64_jpg"] = encoded
+            mime = "image/jpeg"
+            result = None
         else:
-            prompt_text += "\nUse python matplotlib to generate a statistical plot based on the above information. Only provide the code without any explanations. Code:"
-        
-        content_list = [{"type": "text", "text": prompt_text}]
-        
-        gen_config_args = {
-            "system_instruction": self.system_prompt,
-            "temperature": self.exp_config.temperature,
-            "candidate_count": 1,
-            "max_output_tokens": 50000,
-        }
-        
-        aspect_ratio = data["additional_info"]["rounded_ratio"]
-        image_size = image_size_from_data(data)
-
-        if cfg["use_image_generation"]:
-            if "gpt-image" in self.model_name:
-                image_config = {
-                    "size": "1536x1024",
-                    "quality": "high",
-                    "background": "opaque",
-                    "output_format": "png",
-                }
-                response_list = await generation_utils.call_openai_image_generation_with_retry_async(
-                    model_name=self.model_name,
-                    prompt=prompt_text[:30000],
-                    config=image_config,
-                    max_attempts=5,
-                    retry_delay=30,
-                )
-            elif generation_utils.openrouter_client is not None:
-                image_config = {
-                    "system_prompt": self.system_prompt,
-                    "temperature": self.exp_config.temperature,
-                    "aspect_ratio": aspect_ratio,
-                    "image_size": image_size,
-                }
-                response_list = await generation_utils.call_openrouter_image_generation_with_retry_async(
-                    model_name=self.model_name,
-                    contents=content_list,
-                    config=image_config,
-                    max_attempts=5,
-                    retry_delay=30,
-                )
+            options.update(aspect_ratio=data.get("additional_info", {}).get("rounded_ratio", "1:1"),
+                           image_size=image_size_from_data(data), output_format="png", background="opaque")
+            if rfs_enabled:
+                result = await generation_utils.generate_images(self.model_name, [{"type": "text", "text": prompt}], options,
+                    provider=provider, overrides=overrides, timeout=timeout, max_attempts=3, retry_delay=1, total_timeout=timeout)
+                sample = result.samples[-1]
+                encoded, mime = sample.image_base64, sample.image_mime
             else:
-                gen_config_args["response_modalities"] = ["IMAGE"]
-                gen_config_args["image_config"] = types.ImageConfig(
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
-                )
-                response_list = await generation_utils.call_gemini_with_retry_async(
-                    model_name=self.model_name,
-                    contents=content_list,
-                    config=types.GenerateContentConfig(**gen_config_args),
-                    max_attempts=5,
-                    retry_delay=30,
-                )
-        else:
-            # Code/text generation — use the unified router
-            response_list = await generation_utils.call_model_with_retry_async(
-                model_name=self.model_name,
-                contents=content_list,
-                config=types.GenerateContentConfig(**gen_config_args),
-                max_attempts=5,
-                retry_delay=30,
-            )
-        
-        output_key = f"vanilla_{cfg['task_name']}_base64_jpg"
-        if cfg["use_image_generation"]:
-            data[output_key] = await asyncio.to_thread(image_utils.convert_png_b64_to_jpg_b64, response_list[0])
-        else:
-            if response_list and response_list[0]:
-                raw_code = response_list[0]
-                data[f"vanilla_{cfg['task_name']}_code"] = raw_code
-                loop = asyncio.get_running_loop()
-                base64_jpg = await loop.run_in_executor(
-                    self.process_executor, execute_plot_code_worker, raw_code, 100
-                )
-                if base64_jpg:
-                    data[output_key] = base64_jpg
-
+                responses = await generation_utils.call_image_with_retry_async(self.model_name, [{"type": "text", "text": prompt}], options,
+                    provider=provider, overrides=overrides, timeout=timeout, max_attempts=3, retry_delay=1, total_timeout=timeout)
+                encoded = responses[-1]
+                mime = generation_utils.image_metadata(encoded)["mime_type"]
+                result = None
+            preview = await asyncio.to_thread(image_utils.convert_png_b64_to_jpg_b64, encoded)
+            if not preview:
+                raise generation_utils.GenerationResponseError("Image preview conversion failed", category="image_decode")
+            data[stem + "_base64_jpg"] = preview
+        data[stem + "_base64"] = encoded
+        data[stem + "_image_mime"] = mime
+        data[stem + "_base64_png"] = generation_utils.lossless_png_base64(encoded)
+        if rfs_enabled:
+            from .visualizer_agent import VisualizerAgent
+            if result is None:
+                profile = resolve_model(self.model_name, provider, "text", overrides)
+                result = generation_utils.GenerationResult([], profile.provider, profile.model_id,
+                            effective_prompt=prompt, effective_system_prompt=system, options=options)
+            VisualizerAgent._record_artifact(self, data, stem, result, encoded, mime, spec,
+                data.get("rfs_design_description", content), "candidate", metadata,
+                code=data.get(stem + "_code"))
         return data
 
 

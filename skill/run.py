@@ -1,92 +1,96 @@
 # Copyright 2026 Google LLC
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""
-CLI entry point for PaperBanana Skill.
-Generates publication-quality academic diagrams and plots from method text.
-"""
+# You may obtain a copy at https://www.apache.org/licenses/LICENSE-2.0
+"""PaperBanana CLI: legacy images or a versioned RFS exchange bundle."""
+from __future__ import annotations
 
 import argparse
 import asyncio
 import base64
+import json
+import os
 import shutil
 import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
-# Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def ensure_model_config():
-    """Copy model_config.template.yaml to model_config.yaml if missing."""
+    """Explicit legacy helper; normal preflight never writes configuration."""
     configs_dir = PROJECT_ROOT / "configs"
-    config_path = configs_dir / "model_config.yaml"
-    template_path = configs_dir / "model_config.template.yaml"
-    if not config_path.exists() and template_path.exists():
-        shutil.copy2(template_path, config_path)
+    path = configs_dir / "model_config.yaml"
+    template = configs_dir / "model_config.template.yaml"
+    if not path.exists() and template.exists():
+        shutil.copy2(template, path)
 
 
-def ensure_dataset(task_name: str):
-    """Download PaperBananaBench data from HuggingFace if not present locally."""
-    data_dir = PROJECT_ROOT / "data" / "PaperBananaBench" / task_name
-    ref_path = data_dir / "ref.json"
-    images_dir = data_dir / "images"
-    if ref_path.exists() and images_dir.exists():
-        return
+def ensure_dataset(task_name: str, **kwargs):
+    from utils.dataset import ensure_dataset as prepare
+    return prepare(task_name, work_dir=PROJECT_ROOT, **kwargs)
+
+
+def extract_final_image_b64(result: dict, exp_mode: str, task_name: str | None = None) -> str | None:
+    from utils.legacy_ui_results import infer_task_name, resolve_final_output
+    task = task_name or infer_task_name(result)
+    selection = resolve_final_output(result, exp_mode=exp_mode, task_name=task)
+    return result.get(selection.image_key) if selection.image_key else None
+
+
+def _save_png(encoded: str, path: Path) -> None:
+    from PIL import Image
+    payload = base64.b64decode(encoded.split(",", 1)[-1], validate=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print("ERROR: huggingface_hub is required for automatic dataset download.\n"
-              "Install it with: pip install huggingface_hub", file=sys.stderr)
-        sys.exit(1)
-    print(f"Downloading PaperBananaBench/{task_name} from HuggingFace...")
-    snapshot_download(
-        "dwzhu/PaperBananaBench",
-        repo_type="dataset",
-        allow_patterns=[f"{task_name}/*"],
-        local_dir=str(PROJECT_ROOT / "data" / "PaperBananaBench"),
-    )
+        with os.fdopen(fd, "wb") as stream, Image.open(BytesIO(payload)) as image:
+            image.load()
+            image.save(stream, format="PNG")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
-def extract_final_image_b64(result: dict, exp_mode: str) -> str | None:
-    """Return the base64-encoded final image from a pipeline result dict.
+def build_parser():
+    parser = argparse.ArgumentParser(description="PaperBanana: generate scientific figures and RFS exchange bundles")
+    parser.add_argument("--content", default="", help="Method text, or real plot data")
+    parser.add_argument("--content-file", default="", help="UTF-8 source file")
+    parser.add_argument("--caption", required=True, help="Figure caption / visual intent")
+    parser.add_argument("--task", choices=["diagram", "plot"], default="diagram")
+    parser.add_argument("--output", default="output.png", help="PNG output path")
+    parser.add_argument("--aspect-ratio", choices=["21:9", "16:9", "3:2", "1:1", "9:16"], default="21:9")
+    parser.add_argument("--max-critic-rounds", type=int, default=None)
+    parser.add_argument("--num-candidates", type=int, default=10)
+    parser.add_argument("--max-concurrent", type=int, default=None)
+    parser.add_argument("--candidate-timeout-seconds", type=float, default=None)
+    parser.add_argument("--plot-timeout-seconds", type=float, default=None)
+    parser.add_argument("--retrieval-setting", choices=["auto", "manual", "random", "none"], default="auto")
+    parser.add_argument("--dataset-policy", choices=["auto", "never", "download"], default="auto")
+    parser.add_argument("--offline", action="store_true", help="Disable dataset downloads. Live generation still requires an API.")
+    parser.add_argument("--planner-metaphor", action="store_true")
+    parser.add_argument("--main-model-name", default="")
+    parser.add_argument("--image-gen-model-name", default="")
+    parser.add_argument("--main-model-provider", default="")
+    parser.add_argument("--image-gen-provider", default="")
+    parser.add_argument("--config", default=None, help="Explicit model configuration YAML")
+    parser.add_argument("--exp-mode", choices=["demo_full", "demo_planner_critic", "vanilla", "dev_polish"], default="demo_full")
+    parser.add_argument("--render-mode", choices=["legacy", "rfs"], default="legacy")
+    parser.add_argument("--rfs-file", default="", help="Scientific FigureSpec JSON; requires the original source input")
+    parser.add_argument("--rfs-output-dir", default="", help="New per-candidate exchange directories")
+    parser.add_argument("--checkpoint-dir", default=None)
+    parser.add_argument("--resume", action="store_true", help="Reuse only successful checkpoints matching source, models, code, and reference data")
+    parser.add_argument("--allow-generated-plot-code", action="store_true", help="Trust generated Python code. It has filesystem/network access; this is not a sandbox.")
+    return parser
 
-    Follows the same fallback order as demo.py:display_candidate_result.
-    """
-    task_name = "diagram"
 
-    # Try critic rounds 3 → 0
-    for round_idx in range(3, -1, -1):
-        key = f"target_{task_name}_critic_desc{round_idx}_base64_jpg"
-        if key in result and result[key]:
-            return result[key]
-
-    # Fallback: stylist (demo_full) or planner
-    if exp_mode == "demo_full":
-        key = f"target_{task_name}_stylist_desc0_base64_jpg"
-    else:
-        key = f"target_{task_name}_desc0_base64_jpg"
-    return result.get(key)
-
-
-async def run(args):
-    ensure_model_config()
-    ensure_dataset(args.task)
-
-    # Late imports so env is ready
+def build_processor(config):
     from agents.planner_agent import PlannerAgent
     from agents.visualizer_agent import VisualizerAgent
     from agents.stylist_agent import StylistAgent
@@ -94,135 +98,127 @@ async def run(args):
     from agents.retriever_agent import RetrieverAgent
     from agents.vanilla_agent import VanillaAgent
     from agents.polish_agent import PolishAgent
-    from utils import config
     from utils.paperviz_processor import PaperVizProcessor
 
-    # Read content from file if --content-file is given
-    content = args.content
-    if args.content_file:
-        content = Path(args.content_file).read_text(encoding="utf-8")
-    if not content:
-        print("ERROR: --content or --content-file is required.", file=sys.stderr)
-        sys.exit(1)
-
-    exp_mode = args.exp_mode
-    exp_config = config.ExpConfig(
-        dataset_name="Demo",
-        split_name="demo",
-        exp_mode=exp_mode,
-        retrieval_setting=args.retrieval_setting,
-        planner_metaphor=args.planner_metaphor,
-        main_model_name=args.main_model_name,
-        image_gen_model_name=args.image_gen_model_name,
-        work_dir=PROJECT_ROOT,
-    )
-
-    processor = PaperVizProcessor(
-        exp_config=exp_config,
-        vanilla_agent=VanillaAgent(exp_config=exp_config),
-        planner_agent=PlannerAgent(exp_config=exp_config),
-        visualizer_agent=VisualizerAgent(exp_config=exp_config),
-        stylist_agent=StylistAgent(exp_config=exp_config),
-        critic_agent=CriticAgent(exp_config=exp_config),
-        retriever_agent=RetrieverAgent(exp_config=exp_config),
-        polish_agent=PolishAgent(exp_config=exp_config),
-    )
-
-    num_candidates = args.num_candidates
-
-    # Build data dicts
-    data_list = []
-    for i in range(num_candidates):
-        data_list.append({
-            "filename": f"skill_candidate_{i}",
-            "caption": args.caption,
-            "content": content,
-            "visual_intent": args.caption,
-            "additional_info": {"rounded_ratio": args.aspect_ratio},
-            "max_critic_rounds": args.max_critic_rounds,
-        })
-
-    # Process (parallel when multiple candidates)
-    results = []
-    async for result_data in processor.process_queries_batch(
-        data_list, max_concurrent=num_candidates, do_eval=False
-    ):
-        results.append(result_data)
-
-    if not results:
-        print("ERROR: Pipeline returned no results.", file=sys.stderr)
-        sys.exit(1)
-
-    # Save images
-    from PIL import Image
-
-    output_path = Path(args.output).resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    saved_paths = []
-    for idx, result in enumerate(results):
-        b64 = extract_final_image_b64(result, exp_mode)
-        if not b64:
-            print(f"WARNING: No image produced for candidate {idx}.", file=sys.stderr)
-            continue
-
-        if "," in b64:
-            b64 = b64.split(",")[1]
-        image_data = base64.b64decode(b64)
-        img = Image.open(BytesIO(image_data))
-
-        if num_candidates == 1:
-            save_path = output_path
-        else:
-            stem = output_path.stem
-            suffix = output_path.suffix or ".png"
-            save_path = output_path.parent / f"{stem}_{idx}{suffix}"
-
-        img.save(str(save_path), format="PNG")
-        saved_paths.append(str(save_path))
-
-    for p in saved_paths:
-        print(p)
+    return PaperVizProcessor(exp_config=config,
+        vanilla_agent=VanillaAgent(exp_config=config), planner_agent=PlannerAgent(exp_config=config),
+        visualizer_agent=VisualizerAgent(exp_config=config), stylist_agent=StylistAgent(exp_config=config),
+        critic_agent=CriticAgent(exp_config=config), retriever_agent=RetrieverAgent(exp_config=config),
+        polish_agent=PolishAgent(exp_config=config))
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="PaperBanana Skill: generate academic diagrams/plots from text"
-    )
-    parser.add_argument("--content", type=str, default="",
-                        help="Method section text to visualize")
-    parser.add_argument("--content-file", type=str, default="",
-                        help="Path to a file containing the method section text")
-    parser.add_argument("--caption", type=str, required=True,
-                        help="Figure caption / visual intent")
-    parser.add_argument("--task", type=str, default="diagram",
-                        choices=["diagram", "plot"],
-                        help="Task type: diagram or plot")
-    parser.add_argument("--output", type=str, default="output.png",
-                        help="Output image path (default: output.png)")
-    parser.add_argument("--aspect-ratio", type=str, default="21:9",
-                        choices=["21:9", "16:9", "3:2"],
-                        help="Aspect ratio (default: 21:9)")
-    parser.add_argument("--max-critic-rounds", type=int, default=3,
-                        help="Max critic refinement rounds (default: 3)")
-    parser.add_argument("--num-candidates", type=int, default=10,
-                        help="Number of parallel candidates to generate (default: 10)")
-    parser.add_argument("--retrieval-setting", type=str, default="auto",
-                        choices=["auto", "manual", "random", "none"],
-                        help="Retrieval mode: auto (VLM selects refs), manual, random, or none (default: auto)")
-    parser.add_argument("--planner-metaphor", action="store_true",
-                        help="Enable diagram-only Planner visual-metaphor discovery before detailed description output")
-    parser.add_argument("--main-model-name", type=str, default="",
-                        help="Main model name for VLM agents (default: from config, currently gemini-3.1-pro-preview)")
-    parser.add_argument("--image-gen-model-name", type=str, default="",
-                        help="Model name for image generation (default: from config, currently gemini-3.1-flash-image-preview)")
-    parser.add_argument("--exp-mode", type=str, default="demo_full",
-                        choices=["demo_full", "demo_planner_critic"],
-                        help="Pipeline mode: demo_full (Retriever+Planner+Stylist+Visualizer+Critic) or demo_planner_critic (Retriever+Planner+Visualizer+Critic, no Stylist) (default: demo_full)")
+def validate_generation_configuration(config):
+    from utils.generation_utils import validate_generation_configuration as preflight
+    preflight(config, needs_text=True, needs_image=config.task_name == "diagram")
 
-    args = parser.parse_args()
-    asyncio.run(run(args))
+
+async def run(args):
+    from utils.config import ExpConfig
+    from utils.runtime import atomic_write_json, normalize_scientific_content, check_figure_task
+
+    # Validate every source and runtime parameter before imports, downloads, or API work.
+    if args.content and args.content_file:
+        raise ValueError("Choose --content or --content-file")
+    content = Path(args.content_file).read_text(encoding="utf-8") if args.content_file else args.content
+    if not content or not content.strip():
+        raise ValueError("--content or --content-file is required")
+    if not args.caption.strip():
+        raise ValueError("--caption cannot be empty")
+    if not 1 <= args.num_candidates <= 1000:
+        raise ValueError("--num-candidates must be between 1 and 1000")
+    if args.rfs_file and args.render_mode != "rfs":
+        raise ValueError("--rfs-file requires --render-mode rfs")
+    if args.offline and args.dataset_policy == "download":
+        raise ValueError("--offline conflicts with --dataset-policy download")
+    source_content_text = content
+    content = normalize_scientific_content(content, args.task, args.render_mode)
+    config = ExpConfig(dataset_name="Demo", task_name=args.task, split_name="demo", exp_mode=args.exp_mode,
+        retrieval_setting=args.retrieval_setting, planner_metaphor=args.planner_metaphor,
+        max_critic_rounds=args.max_critic_rounds, main_model_name=args.main_model_name,
+        image_gen_model_name=args.image_gen_model_name, main_model_provider=args.main_model_provider,
+        image_gen_provider=args.image_gen_provider, config_path=args.config, work_dir=PROJECT_ROOT,
+        render_mode=args.render_mode, max_concurrent=args.max_concurrent,
+        candidate_timeout_seconds=args.candidate_timeout_seconds, plot_timeout_seconds=args.plot_timeout_seconds,
+        allow_generated_plot_code=args.allow_generated_plot_code or args.render_mode == "legacy",
+        dataset_policy=args.dataset_policy, offline=args.offline,
+        checkpoint_dir=args.checkpoint_dir, resume=args.resume)
+    if config.task_name == "plot" and config.render_mode == "rfs" and not args.allow_generated_plot_code:
+        raise ValueError("The current plot backend executes generated Python. Use --allow-generated-plot-code only for a trusted single-user installation; this is not a sandbox.")
+    spec = None
+    if args.rfs_file:
+        from rfs import validate_figure_spec
+        from utils.runtime import strict_scientific_json
+        spec = validate_figure_spec(strict_scientific_json(Path(args.rfs_file).read_text(encoding="utf-8")), input_content=content)
+        check_figure_task(spec, config.task_name)
+    validate_generation_configuration(config)
+    needs_references = config.exp_mode not in ("vanilla", "dev_polish") and config.retrieval_setting != "none"
+    if needs_references:
+        available = ensure_dataset(config.task_name, retrieval_setting=config.retrieval_setting,
+                                   policy=config.dataset_policy, offline=config.offline)
+        if not available:
+            if config.offline or config.dataset_policy in ("never", "download"):
+                raise RuntimeError("Required reference data is unavailable. Supply local data or explicitly use --retrieval-setting none.")
+            print("WARNING: Reference dataset unavailable. Retrieval will be marked skipped; this run is not reference-guided.", file=sys.stderr)
+    if config.task_name == "plot":
+        print("WARNING: Executing trusted generated Python with a timeout. This is not a security sandbox and code can access files or networks.", file=sys.stderr)
+
+    processor = build_processor(config)
+    data_list = [{"filename": f"skill_candidate_{index}", "caption": args.caption,
+                  "content": content, "visual_intent": args.caption,
+                  **({"source_content_text": source_content_text} if args.render_mode == "rfs" else {}),
+                  "additional_info": {"rounded_ratio": args.aspect_ratio},
+                  "max_critic_rounds": config.max_critic_rounds, "render_mode": config.render_mode,
+                  **({"figure_spec": spec} if spec is not None else {})} for index in range(args.num_candidates)]
+    output = Path(args.output).resolve()
+    results, saved_paths = [], []
+    try:
+        async for result in processor.process_queries_batch(data_list, max_concurrent=config.max_concurrent, do_eval=False):
+            results.append(result)
+            index = result.get("candidate_index", len(results) - 1)
+            encoded = extract_final_image_b64(result, args.exp_mode, config.task_name)
+            if args.render_mode == "rfs":
+                from utils.runtime import write_or_reuse_rfs_bundle, candidate_artifact_directory
+                bundle_root = Path(args.rfs_output_dir) if args.rfs_output_dir else output.parent / f"{output.stem}_rfs"
+                bundle_dir = candidate_artifact_directory(bundle_root, result["candidate_id"])
+                try:
+                    write_or_reuse_rfs_bundle(result, bundle_dir)
+                    result["rfs_bundle_dir"] = str(bundle_dir.resolve())
+                except (ValueError, OSError) as exc:
+                    result.update(status="failed", error={"type": type(exc).__name__, "stage": "export", "message": "RFS bundle export failed"})
+                # Preserve source bytes for the selected generation, avoiding JPEG compatibility copies.
+                key = result.get("eval_image_field", "").removesuffix("_base64_jpg")
+                artifact = result.get("rfs_artifacts", {}).get(key, {})
+                encoded = artifact.get("image_base64") or encoded
+            if encoded:
+                path = output if args.num_candidates == 1 else output.parent / f"{output.stem}_{index}{output.suffix or '.png'}"
+                try:
+                    _save_png(encoded, path)
+                    saved_paths.append(str(path))
+                    result["output_path"] = str(path)
+                except (ValueError, OSError) as exc:
+                    result.update(status="failed", error={"type": type(exc).__name__, "stage": "save", "message": "The final image could not be decoded or saved"})
+            else:
+                result.update(status="failed", error=result.get("error") or {"type": "MissingOutput", "stage": "save", "message": "No final image produced"})
+            atomic_write_json(output.with_suffix(output.suffix + ".results.json"), sorted(results, key=lambda item: item.get("candidate_index", 0)))
+    finally:
+        await processor.aclose()
+    for path in saved_paths:
+        print(path)
+    failed = sum(result.get("status") != "succeeded" for result in results)
+    if failed or not results:
+        print(f"ERROR: {failed or args.num_candidates} candidate(s) failed. Successful files, if any, were retained; see the results JSON.", file=sys.stderr)
+        return 2
+    return 0
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        return asyncio.run(run(args))
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

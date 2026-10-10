@@ -21,14 +21,13 @@ import json
 import asyncio
 import base64
 import re
-from google.genai import types
 
 from prompts import diagram_eval_prompts, plot_eval_prompts
-from utils.generation_utils import (
-    call_gemini_with_retry_async,
-    call_claude_with_retry_async,
-    call_openai_with_retry_async,
-)
+from utils.generation_utils import call_model_with_retry_async
+from utils.model_registry import get_default_model
+from utils.legacy_ui_results import infer_task_name, resolve_final_output, resolve_gt_image_path
+from utils.legacy_ui_refinement import image_mime_type, final_image_bytes
+
 
 # Prompt mapping: task_name -> eval_dim -> system_prompt
 PROMPT_MAP = {
@@ -95,8 +94,13 @@ def _extract_winner_with_fallback(clean_json: str, eval_dim: str, valid_winners:
 
 def _determine_tier_outcome(dim1_outcome: str, dim2_outcome: str) -> str:
     """Determine the outcome for a tier given two dimension outcomes."""
+    valid = {"Human", "Model", "Both are good", "Both are bad"}
+    if not isinstance(dim1_outcome, str) or not isinstance(dim2_outcome, str):
+        return "Error"
     o1, o2 = dim1_outcome.strip(), dim2_outcome.strip()
-    
+    if o1 not in valid or o2 not in valid:
+        return "Error"
+
     # Both agree on a clear winner
     if o1 == o2:
         if o1 in ["Both are good", "Both are bad"]:
@@ -118,197 +122,151 @@ def _determine_tier_outcome(dim1_outcome: str, dim2_outcome: str) -> str:
 
 
 async def _run_single_eval_ref(
-    task_name: str,
-    eval_dim: str,
-    raw_content: str,
-    visual_intent: str,
-    gt_image_base64: str,
-    model_image_base64: str,
-    model_name: str
+    task_name: str, eval_dim: str, raw_content: str, visual_intent: str,
+    gt_image_base64: str, model_image_base64: str, model_name: str,
+    provider: str | None = None, overrides: dict | None = None,
 ) -> tuple[str, dict]:
-    """Run a single evaluation dimension for referenced comparison."""
-    # Get the appropriate prompt based on task_name and eval_dim
-    sys_prompt = PROMPT_MAP[task_name][eval_dim]
-
-    # Get task-specific labels
+    """Run one visual comparison through the same explicit provider router as generation."""
     if task_name not in TASK_CONFIG:
         raise ValueError(f"Invalid task name: {task_name}")
-    
-    config = TASK_CONFIG[task_name]
-    
-    # Construct input text based on eval dimension
-    if eval_dim in ["readability", "aesthetics"]:
-        input_text = f"{config['visual_intent_label']}: {visual_intent}\n{config['human_label']}: "
-    else:
-        input_text = f"{config['raw_content_label']}: {raw_content}\n{config['visual_intent_label']}: {visual_intent}\n{config['human_label']}: "
-
-    # Construct content list
-    content_list = [
-        {"type": "text", "text": input_text},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": gt_image_base64,
-            },
-        },
-        {"type": "text", "text": f"\n{config['model_label']}: "},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": model_image_base64,
-            },
-        },
-    ]
-
+    labels = TASK_CONFIG[task_name]
+    sys_prompt = PROMPT_MAP[task_name][eval_dim]
+    input_text = f"{labels['visual_intent_label']}: {visual_intent}\n{labels['human_label']}: "
+    if eval_dim not in {"readability", "aesthetics"}:
+        input_text = f"{labels['raw_content_label']}: {raw_content}\n" + input_text
     valid_winners = ["Human", "Model", "Both are good", "Both are bad"]
-    
     try:
-        if "gemini" in model_name:
-            response_text_list = await call_gemini_with_retry_async(
-                model_name=model_name,
-                contents=content_list,
-                config=types.GenerateContentConfig(
-                    system_instruction=sys_prompt,
-                    temperature=1,
-                    candidate_count=1,
-                    max_output_tokens=50000,
-                ),
-            )
-        elif "gpt" in model_name or "o1" in model_name or "o3" in model_name:
-            response_text_list = await call_openai_with_retry_async(
-                model_name=model_name,
-                contents=content_list,
-                config={
-                    "system_prompt": sys_prompt,
-                    "temperature": 1,
-                    "candidate_num": 1,
-                    "max_completion_tokens": 10000,
-                },
-                max_attempts=5,
-                retry_delay=30,
-            )
-        else:
-            response_text_list = await call_claude_with_retry_async(
-                model_name=model_name,
-                contents=content_list,
-                config={
-                    "system_prompt": sys_prompt,
-                    "temperature": 1,
-                    "candidate_num": 1,
-                    "max_output_tokens": 10000,
-                },
-                max_attempts=5,
-                retry_delay=30,
-            )
-        clean_json = response_text_list[0].replace("```json", "").replace("```", "").strip()
+        images = []
+        for encoded in (gt_image_base64, model_image_base64):
+            encoded = encoded.split(",", 1)[-1] if encoded.startswith("data:") else encoded
+            mime = image_mime_type(base64.b64decode(encoded, validate=True))
+            images.append({"type": "image", "source": {
+                "type": "base64", "media_type": mime, "data": encoded,
+            }})
+        content_list = [
+            {"type": "text", "text": input_text}, images[0],
+            {"type": "text", "text": f"\n{labels['model_label']}: "}, images[1],
+        ]
+        responses = await call_model_with_retry_async(
+            model_name=model_name, provider=provider, overrides=overrides, contents=content_list,
+            config={"system_prompt": sys_prompt, "temperature": 1.0,
+                    "candidate_num": 1, "max_output_tokens": 10000},
+            max_attempts=3, retry_delay=1, error_context=f"evaluation_{eval_dim}",
+        )
+        if not responses or not isinstance(responses[0], str) or not responses[0].strip() or responses[0] == "Error":
+            raise ValueError("Evaluation model returned no usable response")
+        clean_json = responses[0].replace("```json", "").replace("```", "").strip()
         res_obj = json_repair.loads(clean_json)
-        
         if not isinstance(res_obj, dict):
-            res_obj = {
-                "comparison_reasoning": clean_json,
-                "winner": _extract_winner_with_fallback(clean_json, eval_dim, valid_winners)
-            }
+            res_obj = {"comparison_reasoning": clean_json,
+                       "winner": _extract_winner_with_fallback(clean_json, eval_dim, valid_winners)}
         elif "winner" not in res_obj:
             res_obj["winner"] = _extract_winner_with_fallback(clean_json, eval_dim, valid_winners)
-            if "comparison_reasoning" not in res_obj:
-                res_obj["comparison_reasoning"] = clean_json
-        
-        return eval_dim, res_obj
-    except Exception as e:
-        print(f"❌ {eval_dim}: Evaluation failed - {str(e)[:100]}")
-        extracted = _try_regex_extract_winner(clean_json) if 'clean_json' in locals() else None
-        winner = extracted if (extracted and extracted in valid_winners) else "Error"
-        return eval_dim, {"comparison_reasoning": str(e), "winner": winner}
+        if res_obj.get("winner") not in valid_winners:
+            raise ValueError("Evaluation response has an invalid winner")
+        reasoning = res_obj.get("comparison_reasoning", clean_json)
+        if not isinstance(reasoning, str):
+            raise ValueError("Evaluation reasoning must be text")
+        return eval_dim, {"comparison_reasoning": reasoning,
+                          "winner": res_obj["winner"], "status": "completed"}
+    except Exception as exc:
+        # Provider failures cannot turn into a tie, a Human win, or a scientific pass.
+        return eval_dim, {"comparison_reasoning": f"Evaluation failed ({type(exc).__name__}).",
+                          "winner": "Error", "status": "failed",
+                          "error_type": type(exc).__name__}
+
+
+_DIMENSIONS = ("faithfulness", "conciseness", "readability", "aesthetics")
+
+
+def _mark_not_evaluated(sample_data: dict, status: str, outcome: str, reason: str) -> dict:
+    sample_data["evaluation_status"] = status
+    sample_data["evaluation_error"] = reason
+    sample_data.setdefault("scientific_verification_status", "unverified")
+    for dimension in (*_DIMENSIONS, "overall"):
+        sample_data[f"{dimension}_outcome"] = outcome
+        sample_data[f"{dimension}_reasoning"] = reason
+    return sample_data
 
 
 async def get_score_for_image_referenced(
-    sample_data: dict, task_name: str = "diagram", model_name: str = "", work_dir = None
+    sample_data: dict, task_name: str = "diagram", model_name: str = "", work_dir=None,
+    *, provider: str | None = None, overrides: dict | None = None, results_file_path=None,
+    allowed_gt_roots=None,
 ) -> dict:
-    """Get score for diagram referenced comparison.
-    
-    Args:
-        sample_data: Sample data dictionary
-        task_name: Task name (diagram or plot)
-        model_name: Model name for evaluation
-        work_dir: Work directory path for resolving relative paths (pathlib.Path)
+    """Record a visual benchmark comparison, never proof of scientific correctness.
+
+    Missing output or reference is explicitly failed/skipped. An omitted model
+    uses the registry default; callers should pass their experiment's eval model.
     """
+    task_name = infer_task_name(sample_data, default=task_name)
+    model_name = (model_name or get_default_model("text")).strip()
+    if not model_name:
+        return _mark_not_evaluated(sample_data, "failed", "Error", "No evaluation model configured.")
+    sample_data["evaluation_model_name"] = model_name
+    sample_data.setdefault("scientific_verification_status", "unverified")
+    if not sample_data.get("path_to_gt_image"):
+        return _mark_not_evaluated(sample_data, "skipped", "N/A - No GT", "No ground truth image path provided.")
+    if sample_data.get("status") in {"failed", "cancelled"}:
+        return _mark_not_evaluated(sample_data, "skipped", "N/A - Generation Failed", "Generation did not succeed.")
+    selection = resolve_final_output(sample_data, task_name=task_name)
+    if not selection.image_key:
+        return _mark_not_evaluated(sample_data, "skipped", "N/A - Generation Failed", "No generated image available.")
+    sample_data["eval_image_field"] = selection.image_key
+    reference = resolve_gt_image_path(sample_data, task_name=task_name,
+                                      results_file_path=results_file_path, repo_root=work_dir)
+    if reference is None:
+        return _mark_not_evaluated(sample_data, "failed", "Error", "Ground truth image was not found.")
     from pathlib import Path
-
-    raw_content = sample_data["content"]
-    visual_intent = sample_data["visual_intent"]
-    
-    if "path_to_gt_image" not in sample_data:
-        print("⚠️  No ground truth image path found. Skipping evaluation.")
-        for dim in ["faithfulness", "conciseness", "readability", "aesthetics", "overall"]:
-             sample_data[f"{dim}_outcome"] = "N/A - No GT"
+    root = Path(work_dir) if work_dir else Path(__file__).resolve().parents[1]
+    allowed_roots = [root / "data" / "PaperBananaBench" / task_name, root / "results"]
+    if results_file_path:
+        allowed_roots.append(Path(results_file_path).resolve().parent)
+    if allowed_gt_roots is not None:
+        allowed_roots.extend(Path(path) for path in allowed_gt_roots)
+    try:
+        resolved_reference = reference.resolve(strict=True)
+        if not any(resolved_reference.is_relative_to(path.resolve()) for path in allowed_roots):
+            return _mark_not_evaluated(sample_data, "failed", "Error", "Ground truth image is outside configured dataset/results roots.")
+        reference = resolved_reference
+    except OSError:
+        return _mark_not_evaluated(sample_data, "failed", "Error", "Ground truth image is unreadable.")
+    try:
+        reference_bytes = reference.read_bytes()
+        image_mime_type(reference_bytes)
+        gt_image_base64 = base64.b64encode(reference_bytes).decode("ascii")
+        model_bytes = final_image_bytes(sample_data)
+        if model_bytes is None:
+            raise ValueError("Generated image is unreadable")
+        model_image_base64 = base64.b64encode(model_bytes).decode("ascii")
+    except (OSError, ValueError):
+        return _mark_not_evaluated(sample_data, "failed", "Error", "An evaluation image is unreadable or invalid.")
+    raw_content = sample_data.get("content", "")
+    if not isinstance(raw_content, str):
+        raw_content = json.dumps(raw_content, ensure_ascii=False)
+    results = await asyncio.gather(*[
+        _run_single_eval_ref(task_name, dim, raw_content,
+                             sample_data.get("visual_intent", sample_data.get("caption", "")),
+                             gt_image_base64, model_image_base64, model_name, provider, overrides)
+        for dim in _DIMENSIONS
+    ])
+    failed_dimensions = []
+    for dimension, response in results:
+        sample_data[f"{dimension}_reasoning"] = response["comparison_reasoning"]
+        sample_data[f"{dimension}_outcome"] = response["winner"]
+        if response["status"] != "completed":
+            failed_dimensions.append(dimension)
+    if failed_dimensions:
+        sample_data["evaluation_status"] = "failed"
+        sample_data["evaluation_failed_dimensions"] = failed_dimensions
+        sample_data["overall_outcome"] = "Error"
+        sample_data["overall_reasoning"] = "Incomplete evaluation; no overall comparison outcome."
         return sample_data
-
-    path_to_gt_image_rel = sample_data["path_to_gt_image"]
-    
-    # Resolve relative path using work_dir
-    if work_dir:
-        path_to_gt_image = work_dir / f"data/PaperBananaBench/{task_name}" / path_to_gt_image_rel
-    else:
-        # Fallback for backward compatibility (assume it's already absolute)
-        path_to_gt_image = Path(path_to_gt_image_rel)
-
-    with open(path_to_gt_image, "rb") as f:
-        gt_image_base64 = base64.b64encode(f.read()).decode("utf-8")
-
-    eval_image_field = sample_data["eval_image_field"]
-    
-    # Check if image was successfully generated
-    if eval_image_field not in sample_data:
-        print(f"⚠️  Image field '{eval_image_field}' not found. Model generation failed - counting as Human win.")
-        # Model failed to generate image, Human wins by default
-        for dim in ["faithfulness", "conciseness", "readability", "aesthetics", "overall"]:
-            sample_data[f"{dim}_reasoning"] = "Model failed to generate image - Human wins by default"
-            sample_data[f"{dim}_outcome"] = "Human"
-        return sample_data
-    
-    model_image_base64 = sample_data[eval_image_field]
-
-    # Run evaluations for all dimensions
-    dims = ["faithfulness", "conciseness", "readability", "aesthetics"]
-    tasks = [
-        _run_single_eval_ref(
-            task_name,
-            dim,
-            raw_content,
-            visual_intent,
-            gt_image_base64,
-            model_image_base64,
-            model_name
-        ) for dim in dims
-    ]
-
-    results = await asyncio.gather(*tasks)
-    for eval_dim, res_obj in results:
-        sample_data[f"{eval_dim}_reasoning"] = res_obj.get("comparison_reasoning", "")
-        sample_data[f"{eval_dim}_outcome"] = res_obj.get("winner", "Unknown")
-
-    faithfulness = sample_data.get("faithfulness_outcome", "Unknown")
-    readability = sample_data.get("readability_outcome", "Unknown")
-    conciseness = sample_data.get("conciseness_outcome", "Unknown")
-    aesthetics = sample_data.get("aesthetics_outcome", "Unknown")
-    
-    # Tier 1: Faithfulness + Readability
-    tier1_outcome = _determine_tier_outcome(faithfulness, readability)
-    
-    if tier1_outcome in ["Model", "Human"]:
-        overall_outcome = tier1_outcome
-        decision_path = f"Tier1({faithfulness}, {readability}) -> {tier1_outcome} [Decided at Tier 1]"
-    else:
-        # Tier 1 is tied, check Tier 2
-        tier2_outcome = _determine_tier_outcome(conciseness, aesthetics)
-        overall_outcome = tier2_outcome
-        decision_path = f"Tier1({faithfulness}, {readability}) -> Tie; Tier2({conciseness}, {aesthetics}) -> {tier2_outcome} [Decided at Tier 2]"
-    
-    sample_data["overall_outcome"] = overall_outcome
-    sample_data["overall_reasoning"] = f"Rule-based calculation: {decision_path}"
-
+    tier1 = _determine_tier_outcome(sample_data["faithfulness_outcome"], sample_data["readability_outcome"])
+    tier2 = _determine_tier_outcome(sample_data["conciseness_outcome"], sample_data["aesthetics_outcome"])
+    sample_data["overall_outcome"] = tier1 if tier1 in {"Model", "Human"} else tier2
+    sample_data["overall_reasoning"] = f"Visual comparison aggregation: Tier 1={tier1}; Tier 2={tier2}. Scientific correctness remains separately unverified."
+    sample_data["evaluation_status"] = "completed"
+    sample_data.pop("evaluation_error", None)
+    sample_data.pop("evaluation_failed_dimensions", None)
     return sample_data

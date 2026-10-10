@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.env
+.env.*
+!.env.example
+configs/model_config.yaml
+data
+output
+outputs
+results
+checkpoints
+**/*.log

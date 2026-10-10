@@ -19,31 +19,29 @@ from io import BytesIO
 from PIL import Image
 import os
 import sys
+from pathlib import Path
 import asyncio
 import importlib
 import re
 
 # Ensure local imports work
-sys.path.append(os.getcwd())
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+from utils.legacy_ui_results import (
+    infer_task_name, build_evolution_stages, resolve_final_output,
+    resolve_display_mode_output, resolve_gt_image_path,
+)
+from utils.legacy_ui_refinement import final_image, summarize_results
 
 st.set_page_config(layout="wide", page_title="PaperVizAgent Referenced Eval Visualizer", page_icon="🍌")
 
 
 def detect_task_type(data):
-    """Detect whether data is for diagram or plot task."""
-    if not data:
-        return "diagram"
-    
-    sample = data[0]
-    # Check for plot-specific fields
-    if "content" in sample and isinstance(sample.get("content"), dict):
-        return "plot"
-    # Check for diagram-specific fields
-    # Now directly accessible from top level
-        return "diagram"
-    
-    # Default to diagram
-    return "diagram"
+    if isinstance(data, dict):
+        return infer_task_name(data)
+    return infer_task_name(data[0]) if data else "diagram"
+
+
 
 @st.cache_data
 def load_data(path):
@@ -154,41 +152,46 @@ def format_reasoning(text):
     # Final trim
     return formatted_text.strip()
 
-async def run_eval_on_sample(sample, task_name="diagram"):
-    """Hot-reload prompts and run eval."""
-    import prompts.diagram_eval_prompts
-    import prompts.plots_eval_prompts
-    import utils.eval_toolkits
-    
-    importlib.reload(prompts.diagram_eval_prompts)
-    importlib.reload(prompts.plots_eval_prompts)
-    importlib.reload(utils.eval_toolkits)
-    from utils.eval_toolkits import get_score_for_image_referenced
-    
-    # Ensure eval_image_field is set
-    if "eval_image_field" not in sample:
-        # Try to infer from available fields or use default
-        if task_name == "plot":
-            if "target_plot_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_plot_desc0_base64_jpg"
-            elif "target_plot_stylist_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_plot_stylist_desc0_base64_jpg"
-        else:
-            if "target_diagram_critic_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_diagram_critic_desc0_base64_jpg"
-            elif "target_diagram_stylist_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_diagram_stylist_desc0_base64_jpg"
-            elif "target_diagram_desc0_base64_jpg" in sample:
-                sample["eval_image_field"] = "target_diagram_desc0_base64_jpg"
-            else:
-                sample["eval_image_field"] = "vanilla_image_base64"  # fallback
-    
-    return await get_score_for_image_referenced(sample, task_name=task_name)
+async def run_eval_on_sample(
+    sample, task_name="diagram", model_name=None, work_dir=None, results_file_path=None,
+):
+    """Hot-reload valid prompt modules and evaluate the actual final stage."""
+    from prompts import diagram_eval_prompts, plot_eval_prompts
+    import utils.eval_toolkits as eval_toolkits
+    from utils.config import ExpConfig
+
+    importlib.reload(diagram_eval_prompts)
+    importlib.reload(plot_eval_prompts)
+    importlib.reload(eval_toolkits)
+    task_name = infer_task_name(sample, default=task_name)
+    root = Path(work_dir) if work_dir else REPO_ROOT
+    settings = ExpConfig(dataset_name="PaperBananaBench", task_name=task_name, work_dir=root)
+    selection = resolve_final_output(sample, task_name=task_name)
+    if selection.image_key:
+        sample["eval_image_field"] = selection.image_key
+    from utils.generation_utils import configure_generation_async, close_clients_async
+    await configure_generation_async(settings.config_path if settings.config_path.is_file() else REPO_ROOT / "configs" / "model_config.yaml")
+    try:
+        return await eval_toolkits.get_score_for_image_referenced(
+            sample, task_name=task_name, model_name=model_name or settings.evaluation_model_name,
+            work_dir=root, results_file_path=results_file_path,
+        )
+    finally:
+        await close_clients_async()
+
 
 def main():
     st.sidebar.title("🍌 PaperVizAgent Referenced Eval")
     file_path = st.sidebar.text_input("Results JSONL Path", placeholder="Enter path to results file...")
     
+    from utils.config import ExpConfig
+    from utils.model_registry import list_model_options
+    evaluation_model = st.sidebar.text_input(
+        "Evaluation Model", value=ExpConfig(dataset_name="PaperBananaBench", work_dir=REPO_ROOT).evaluation_model_name,
+        help="Set a registry model or explicit provider/model ID. Re-running evaluation makes live API calls.",
+    )
+    st.sidebar.caption("Registered text models: " + ", ".join(list_model_options("text")))
+
     # --- Debug Tool Section in Sidebar ---
     if "debug_sample" in st.session_state:
         st.sidebar.divider()
@@ -202,9 +205,13 @@ def main():
                 try:
                     # Pass task_name if available
                     task_name = st.session_state.get("task_type", "diagram")
-                    new_result = asyncio.run(run_eval_on_sample(debug_sample.copy(), task_name))
+                    new_result = asyncio.run(run_eval_on_sample(debug_sample.copy(), task_name,
+                                                                  model_name=evaluation_model, results_file_path=file_path))
                     st.session_state.debug_result = new_result
-                    st.sidebar.success("Evaluation Complete!")
+                    if new_result.get("evaluation_status") == "completed":
+                        st.sidebar.success("Visual comparison complete. Scientific verification remains separate.")
+                    else:
+                        st.sidebar.warning(f"Evaluation {new_result.get('evaluation_status', 'failed')}.")
                 except Exception as e:
                     st.sidebar.error(f"Eval Failed: {e}")
         
@@ -232,31 +239,11 @@ def main():
     task_type = detect_task_type(data)
     st.session_state["task_type"] = task_type
     
-    # --- Display Mode Selection ---
-    if task_type == "plot":
-        display_mode = st.sidebar.selectbox(
-            "Model Display Mode",
-            ["Auto", "Vanilla", "Stylist"],
-            help="Select which stage of the model output to display."
-        )
-        
-        mode_to_keys = {
-            "Vanilla": ("target_plot_desc0_base64_jpg", "target_plot_desc0"),
-            "Stylist": ("target_plot_stylist_desc0_base64_jpg", "target_plot_stylist_desc0"),
-        }
-    else:  # diagram
-        display_mode = st.sidebar.selectbox(
-            "Model Display Mode",
-            ["Auto", "Vanilla", "Stylist", "Critic"],
-            help="Select which stage of the model output to display."
-        )
-        
-        mode_to_keys = {
-            "Vanilla": ("target_diagram_desc0_base64_jpg", "target_diagram_desc0"),
-            "Stylist": ("target_diagram_stylist_desc0_base64_jpg", "target_diagram_stylist_desc0"),
-            "Critic": ("target_diagram_critic_desc0_base64_jpg", "target_diagram_critic_desc0"),
-        }
-    
+    display_mode = st.sidebar.selectbox(
+        "Model Display Mode", ["Auto", "Vanilla", "Planner", "Stylist", "Critic", "Polished"],
+        help="Display a particular stage, or the actual selected final output.",
+    )
+
     # --- Search Functionality ---
     search_field = "id"
     search_query = st.sidebar.text_input(f"🔍 Search {search_field.title()}", value="", help=f"Filter by {search_field} (case-insensitive)")
@@ -329,6 +316,7 @@ def main():
     for i, item in enumerate(batch):
         idx = start_idx + i
         
+        task_type = infer_task_name(item)
         # Extract metadata based on task type
         identifier = item.get("id", "Unknown")
         caption_or_desc = item.get("visual_intent") or item.get("brief_desc", "N/A")
@@ -353,25 +341,12 @@ def main():
 
             st.caption(f"{search_field.title()}: `{identifier}`")
             
-            # --- Determine Image and Text for Model ---
-            if display_mode == "Auto":
-                eval_field = item.get("eval_image_field")
-                if eval_field:
-                    model_b64_key = eval_field
-                    model_text_key = eval_field.replace("_base64_jpg", "")
-                else:
-                    # Fallback
-                    if task_type == "plot":
-                        model_b64_key = "target_plot_desc0_base64_jpg"
-                        model_text_key = "target_plot_desc0"
-                    else:
-                        model_b64_key = "target_diagram_critic_desc0_base64_jpg"
-                        model_text_key = "target_diagram_critic_desc0"
-            else:
-                model_b64_key, model_text_key = mode_to_keys[display_mode]
-
-            model_b64 = item.get(model_b64_key)
-            model_description = item.get(model_text_key, "N/A")
+            selection = resolve_display_mode_output(item, display_mode, task_name=task_type)
+            model_b64_key, model_text_key = selection.image_key, selection.text_key
+            model_b64 = item.get(model_b64_key) if model_b64_key else None
+            model_description = item.get(model_text_key, "N/A") if model_text_key else "N/A"
+            if item.get("status") == "failed":
+                st.warning("Generation failed; retained stages are available for inspection.")
 
             # Outcome Summary
             outcome_cols = st.columns(len(dimensions))
@@ -394,7 +369,11 @@ def main():
                 model_label = "Model Plot" if task_type == "plot" else "Model Diagram"
                 st.markdown(f"**{model_label}** ({display_mode})")
                 if model_b64:
-                    st.image(base64_to_image(model_b64), use_container_width=True)
+                    decoded = base64_to_image(model_b64)
+                    if decoded is not None:
+                        st.image(decoded, use_container_width=True)
+                    else:
+                        st.warning("The selected stage image is invalid.")
                 else:
                     st.error(f"Missing key: `{model_b64_key}`")
                 
@@ -405,12 +384,9 @@ def main():
                 human_label = "Human Plot" if task_type == "plot" else "Human Diagram"
                 st.markdown(f"**{human_label}** (Reference)")
                 
-                # Get GT image path based on task type
-                if task_type == "plot":
-                    gt_path = item.get("path_to_gt_image")
-                else:
-                    gt_path = item.get("path_to_gt_image")
-                
+                gt_path = resolve_gt_image_path(item, task_name=task_type,
+                                                results_file_path=file_path, repo_root=REPO_ROOT)
+
                 gt_img = load_local_image(gt_path)
                 if gt_img:
                     st.image(gt_img, use_container_width=True)

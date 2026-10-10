@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:paperbanana:rfs:manifest:1.0.0",
+  "title": "PaperBanana RFS exchange result manifest v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "candidate_id", "status", "stage", "provider", "model", "description_key", "options", "provenance", "scientific_fingerprint", "review", "review_status", "error", "files"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"}, "candidate_id": {"type": "string", "minLength": 1}, "status": {"enum": ["succeeded", "failed"]},
+    "stage": {"type": ["string", "null"]}, "provider": {"type": ["string", "null"]}, "model": {"type": ["string", "null"]}, "description_key": {"type": ["string", "null"]},
+    "options": {"type": "object"}, "provenance": {"type": "object", "required": ["scientific_verification", "external_consumer_verified", "editable_reconstruction_verified", "image_bytes_preserved", "generation"], "properties": {
+      "scientific_verification": {"enum": ["unverified", "user_verified"]}, "external_consumer_verified": {"const": false}, "editable_reconstruction_verified": {"const": false}, "image_bytes_preserved": {"type": "boolean"}, "generation": {"type": "object"}
+    }},
+    "scientific_fingerprint": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}, "review": {"type": "array", "items": {"type": "object"}}, "review_status": {"type": "string"}, "error": {"type": ["object", "string", "null"]},
+    "files": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "bytes", "mime"], "properties": {
+      "path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "bytes": {"type": "integer", "minimum": 0}, "mime": {"type": "string", "minLength": 1}
+    }}}
+  },
+  "allOf": [{"if": {"properties": {"status": {"const": "succeeded"}}}, "then": {"properties": {
+    "stage": {"type": "string", "minLength": 1}, "provider": {"type": "string", "minLength": 1}, "model": {"type": "string", "minLength": 1}, "scientific_fingerprint": {"type": "string"},
+    "files": {"required": ["image", "prompt", "design", "figure_spec"]}
+  }}}]
+}

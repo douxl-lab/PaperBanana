@@ -26,6 +26,8 @@ from PIL import Image
 
 from utils import generation_utils
 from .base_agent import BaseAgent
+from rfs.contract import is_rfs_enabled, RFSValidationError
+from rfs.agent_contract import STRUCTURED_SYSTEM_SUPPLEMENT, stylist_instructions, apply_stylist_response
 
 
 class StylistAgent(BaseAgent):
@@ -62,7 +64,8 @@ class StylistAgent(BaseAgent):
         
         detailed_description = data[input_desc_key]
         
-        with open(self.exp_config.work_dir / f"style_guides/neurips2025_{task_name}_style_guide.md", "r", encoding="utf-8") as f:
+        guide_path = getattr(self.exp_config, "style_guide_path", None) or self.exp_config.work_dir / f"style_guides/neurips2025_{task_name}_style_guide.md"
+        with open(guide_path, "r", encoding="utf-8") as f:
             style_guide = f.read()
         
         user_prompt = f"Detailed Description: {detailed_description}\nStyle Guidelines: {style_guide}\n"
@@ -72,6 +75,9 @@ class StylistAgent(BaseAgent):
         user_prompt += f"{cfg['context_labels'][0]}: {raw_content}\n"
         user_prompt += f"{cfg['context_labels'][1]}: {data['visual_intent']}\nYour Output:"
         
+        rfs_mode = is_rfs_enabled(data, self.exp_config)
+        if rfs_mode:
+            user_prompt += "\n" + stylist_instructions(data)
         content_list = [{"type": "text", "text": user_prompt}]
 
         # Generate response
@@ -79,16 +85,25 @@ class StylistAgent(BaseAgent):
             model_name=self.model_name,
             contents=content_list,
             config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
+                system_instruction=self.system_prompt + (STRUCTURED_SYSTEM_SUPPLEMENT if rfs_mode else ""),
                 temperature=self.exp_config.temperature,
                 candidate_count=1,
                 max_output_tokens=50000,
             ),
             max_attempts=5,
             retry_delay=5,
+            provider=getattr(self.exp_config, "main_model_provider", None) or None,
+            overrides=getattr(self.exp_config, "model_profiles", None),
+            timeout=getattr(self.exp_config, "candidate_timeout_seconds", 600),
+            total_timeout=getattr(self.exp_config, "candidate_timeout_seconds", 600),
         )
         
-        data[output_desc_key] = response_list[0]
+        if not response_list:
+            raise RFSValidationError("Stylist returned no design response")
+        if rfs_mode:
+            apply_stylist_response(data, response_list[0], desc_key=output_desc_key)
+        else:
+            data[output_desc_key] = response_list[0]
 
         return data
 

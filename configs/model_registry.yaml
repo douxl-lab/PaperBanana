@@ -1,0 +1,211 @@
+# Documentation snapshot, 2026-10-10. Catalog support does not verify account access.
+defaults:
+  gemini: {text: gemini-3.8-flash, image: gemini-nano-banana-2.1}
+  openai: {text: gpt-6.1-sol, image: gpt-image-2.5-sunburst}
+profiles:
+  gemini_text:
+    provider: gemini
+    endpoint: gemini_generate_content
+    operations: [text, structured_text]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    max_output_tokens: 65536
+    input_token_limit: 1048576
+    max_reference_images: 100
+  gemini_image:
+    provider: gemini
+    endpoint: gemini_generate_content
+    operations: [image_generate, image_edit]
+    input_modalities: [text, image]
+    output_modalities: [image, text]
+    max_output_tokens: 32768
+    input_token_limit: 131072
+    image_sizes: [1K, 2K, 4K]
+    aspect_ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+    image_size_mode: gemini
+    max_reference_images: 14
+  openai_text:
+    provider: openai
+    endpoint: openai_chat
+    operations: [text, structured_text]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    max_output_tokens: 32768
+    max_reference_images: 100
+  openai_reasoning:
+    provider: openai
+    endpoint: openai_responses
+    operations: [text, structured_text]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    max_output_tokens: 128000
+    max_reference_images: 100
+    temperature_supported: false
+    reasoning_efforts: [low, medium, high, xhigh, max]
+    default_reasoning_effort: low
+  openai_image:
+    provider: openai
+    endpoint: openai_images
+    operations: [image_generate, image_edit]
+    input_modalities: [text, image]
+    output_modalities: [image]
+    supports_system_prompt: false
+    image_size_mode: openai_legacy
+    image_sizes: [1024x1024, 1536x1024, 1024x1536, auto]
+    max_reference_images: 16
+    prompt_notes: 'Preserve exact scientific labels and layout. This provider takes a single image prompt; system instructions must be compiled into it.'
+  anthropic_legacy:
+    provider: anthropic
+    endpoint: anthropic_messages
+    operations: [text]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    max_output_tokens: 8192
+    max_reference_images: 100
+    status: legacy-unverified
+models:
+  gemini-3.8-flash:
+    base_profile: gemini_text
+    model_id: gemini-3.8-flash
+    status: stable
+    source: https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
+    reasoning_efforts: [low, medium, high]
+  gemini-3.1-pro-preview:
+    base_profile: gemini_text
+    model_id: gemini-3.1-pro-preview
+    status: preview
+    source: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+  gemini-3-flash-preview:
+    base_profile: gemini_text
+    model_id: gemini-3-flash-preview
+    status: preview
+    source: https://ai.google.dev/gemini-api/docs/models
+  gemini-2.5-pro:
+    base_profile: gemini_text
+    model_id: gemini-2.5-pro
+    status: legacy-access-restricted
+    source: https://ai.google.dev/gemini-api/docs/models
+  gemini-2.5-flash:
+    base_profile: gemini_text
+    model_id: gemini-2.5-flash
+    status: legacy-access-restricted
+    source: https://ai.google.dev/gemini-api/docs/models
+  gemini-nano-banana-2.1:
+    base_profile: gemini_image
+    model_id: gemini-nano-banana-2.1
+    status: stable
+    reasoning_efforts: [minimal, medium, high]
+    aspect_ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1']
+    source: https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1
+  gemini-3.1-flash-image:
+    base_profile: gemini_image
+    model_id: gemini-3.1-flash-image
+    status: stable
+    aspect_ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1']
+    source: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image
+  gemini-3-pro-image:
+    base_profile: gemini_image
+    model_id: gemini-3-pro-image
+    input_token_limit: 65536
+    status: stable
+    source: https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image
+  gemini-2.5-flash-image:
+    base_profile: gemini_image
+    model_id: gemini-2.5-flash-image
+    image_sizes: [1K]
+    max_reference_images: 3
+    status: legacy-access-restricted
+    source: https://ai.google.dev/gemini-api/docs/models
+  gemini-3.1-flash-image-preview:
+    base_profile: gemini_image
+    model_id: gemini-3.1-flash-image-preview
+    status: retired
+    replacement: gemini-3.1-flash-image
+    source: https://ai.google.dev/gemini-api/docs/deprecations
+  gemini-3-pro-image-preview:
+    base_profile: gemini_image
+    model_id: gemini-3-pro-image-preview
+    status: retired
+    replacement: gemini-3-pro-image
+    source: https://ai.google.dev/gemini-api/docs/deprecations
+  gpt-6.1-sol:
+    base_profile: openai_reasoning
+    model_id: gpt-6.1-sol
+    source: https://developers.openai.com/api/docs/models/gpt-6.1-sol
+  gpt-5.4:
+    base_profile: openai_reasoning
+    model_id: gpt-5.4
+    source: https://developers.openai.com/api/docs/models/gpt-5.4
+  gpt-4.1:
+    base_profile: openai_text
+    model_id: gpt-4.1
+    source: https://developers.openai.com/api/docs/models/gpt-4.1
+  gpt-4o:
+    base_profile: openai_text
+    model_id: gpt-4o
+    max_output_tokens: 16384
+    status: legacy-unverified
+  gpt-image-2.5-sunburst:
+    base_profile: openai_image
+    model_id: gpt-image-2.5-sunburst
+    image_size_mode: openai_flexible
+    image_quality: [auto, low, medium, high, xhigh, max]
+    source: https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst
+  gpt-image-2.5-flare:
+    base_profile: openai_image
+    model_id: gpt-image-2.5-flare
+    image_size_mode: openai_flexible
+    image_quality: [auto, low, medium, high, xhigh, max]
+    source: https://developers.openai.com/api/docs/guides/image-generation
+  gpt-image-2.5-sunburst-2026-09-08:
+    base_profile: openai_image
+    model_id: gpt-image-2.5-sunburst-2026-09-08
+    image_size_mode: openai_flexible
+    image_quality: [auto, low, medium, high, xhigh, max]
+    source: https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst
+  gpt-image-2.5-flare-2026-09-08:
+    base_profile: openai_image
+    model_id: gpt-image-2.5-flare-2026-09-08
+    image_size_mode: openai_flexible
+    image_quality: [auto, low, medium, high, xhigh, max]
+    source: https://developers.openai.com/api/docs/guides/image-generation
+  gpt-image-2:
+    base_profile: openai_image
+    model_id: gpt-image-2
+    image_size_mode: openai_flexible
+    source: https://developers.openai.com/api/docs/models/gpt-image-2
+  gpt-image-2-2026-04-21:
+    base_profile: openai_image
+    model_id: gpt-image-2-2026-04-21
+    image_size_mode: openai_flexible
+    source: https://developers.openai.com/api/docs/models/gpt-image-2
+  gpt-image-1.5:
+    base_profile: openai_image
+    model_id: gpt-image-1.5
+    input_fidelity: [low, high]
+    source: https://developers.openai.com/api/docs/models/gpt-image-1.5
+  gpt-image-1:
+    base_profile: openai_image
+    model_id: gpt-image-1
+    input_fidelity: [low, high]
+    source: https://developers.openai.com/api/reference/resources/images/methods/edit
+  gpt-image-1-mini:
+    base_profile: openai_image
+    model_id: gpt-image-1-mini
+    input_fidelity: [low]
+    source: https://developers.openai.com/api/reference/resources/images/methods/edit
+  claude-3-5-sonnet-20241022:
+    base_profile: anthropic_legacy
+    model_id: claude-3-5-sonnet-20241022
+  claude-sonnet-4-20250514:
+    base_profile: anthropic_legacy
+    model_id: claude-sonnet-4-20250514
+  claude-opus-4-20250514:
+    base_profile: anthropic_legacy
+    model_id: claude-opus-4-20250514
+aliases:
+  models/gemini-3.8-flash: gemini-3.8-flash
+  models/gemini-3.1-pro-preview: gemini-3.1-pro-preview
+  models/gemini-nano-banana-2.1: gemini-nano-banana-2.1
+  models/gemini-3.1-flash-image: gemini-3.1-flash-image
+  models/gemini-3-pro-image: gemini-3-pro-image

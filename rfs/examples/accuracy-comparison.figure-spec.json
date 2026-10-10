@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0.0",
+  "figure_id": "accuracy-comparison",
+  "kind": "plot",
+  "nodes": [],
+  "edges": [],
+  "groups": [],
+  "labels": [],
+  "datasets": [
+    {
+      "id": "input-data",
+      "name": "User supplied data",
+      "source_id": "input-source",
+      "columns": [
+        "method",
+        "accuracy"
+      ],
+      "rows": [
+        [
+          "Baseline",
+          0.61
+        ],
+        [
+          "Proposed",
+          0.78
+        ]
+      ],
+      "sha256": "85ab30f6c852ab6e1da524a9e116738b70155078512353e3122f2dff5b3f285f",
+      "encoding": {
+        "x": "method",
+        "y": "accuracy",
+        "chart_type": "bar"
+      }
+    }
+  ],
+  "sources": [
+    {
+      "id": "input-source",
+      "kind": "user_data",
+      "content": "{\"columns\":[\"method\",\"accuracy\"],\"rows\":[[\"Baseline\",0.61],[\"Proposed\",0.78]]}",
+      "sha256": "85ab30f6c852ab6e1da524a9e116738b70155078512353e3122f2dff5b3f285f"
+    }
+  ],
+  "constraints": {
+    "locked": true,
+    "required_labels": [],
+    "layout": [
+      "One chart panel."
+    ],
+    "visual": [
+      "Readable axes."
+    ],
+    "negative": [
+      "Never change data values."
+    ]
+  },
+  "design": {
+    "layout": "Single bar-chart panel.",
+    "composition": "Full dataset with category axis and accuracy axis.",
+    "palette": [
+      "#FFFFFF",
+      "#2F6B9A"
+    ],
+    "typography": "Sans serif labels.",
+    "candidate_variation": ""
+  },
+  "provenance": {
+    "origin": "user_supplied",
+    "scientific_verification": "unverified",
+    "external_consumer_verified": false
+  }
+}

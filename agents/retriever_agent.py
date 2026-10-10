@@ -58,145 +58,119 @@ class RetrieverAgent(BaseAgent):
                 "instruction_suffix": "select the Top 10 most relevant diagrams according to the instructions provided. Your output should be a strictly valid JSON object containing a single list of the exact ids of the top 10 selected diagrams.",
             }
     
+    def _reference_file(self, manual: bool = False):
+        filename = "agent_selected_12.json" if manual else "ref.json"
+        return self.exp_config.work_dir / "data" / "PaperBananaBench" / self.task_config["task_name"] / filename
+
+    def _load_pool(self, manual: bool = False) -> list:
+        from pathlib import Path
+        path = self._reference_file(manual)
+        stat = path.stat()
+        stamp = (str(path), stat.st_mtime_ns, stat.st_size)
+        cache = getattr(self, "_pool_cache", {})
+        if stamp in cache:
+            return cache[stamp]
+        with path.open(encoding="utf-8") as stream:
+            raw = json.load(stream)
+        if not isinstance(raw, list):
+            raise ValueError("Reference metadata must be a list")
+        root = path.parent.resolve()
+        pool, omitted, seen = [], 0, set()
+        for item in raw:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip() or item["id"] in seen or not all(key in item for key in ("content", "visual_intent", "path_to_gt_image")) or not isinstance(item["visual_intent"], str) or not isinstance(item["path_to_gt_image"], str):
+                omitted += 1
+                continue
+            image = (root / str(item["path_to_gt_image"])).resolve()
+            if not image.is_relative_to(root) or not image.is_file():
+                omitted += 1
+                continue
+            seen.add(item["id"])
+            pool.append(item)
+        self._pool_cache = {stamp: pool}
+        self._omitted_reference_count = omitted
+        return pool
+
     async def process(self, data: Dict[str, Any], retrieval_setting: str = "auto") -> Dict[str, Any]:
-        """
-        Unified processing method for both diagram and plot retrieval.
-        Supports multiple retrieval settings: auto, manual, random, none.
-        Always returns top10_references as a list of IDs.
-        
-        Args:
-            data: Input data dictionary with 'content' and 'visual_intent'
-            retrieval_setting: One of 'auto', 'manual', 'random', 'none'
-        
-        Returns:
-            data: Updated data dictionary with 'top10_references' as List[str]
-        """
-        cfg = self.task_config
-        
-        # Check if reference file exists to gracefully fallback if dataset isn't downloaded
-        import os
-        ref_file = self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json"
-        
-        if retrieval_setting in ["auto", "random"] and not ref_file.exists():
-            print(f"Warning: Reference file not found at {ref_file}. Falling back to retrieval_setting='none'.")
-            retrieval_setting = "none"
-        
-        if retrieval_setting == "manual":
-            manual_file = self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/agent_selected_12.json"
-            if not manual_file.exists():
-                print(f"Warning: Manual reference file not found at {manual_file}. Falling back to retrieval_setting='none'.")
-                retrieval_setting = "none"
-        
+        if retrieval_setting not in ("auto", "manual", "random", "none"):
+            raise ValueError("Unknown retrieval setting")
+        requested = retrieval_setting
+        data["top10_references"], data["retrieved_examples"] = [], []
+        reason = None
         if retrieval_setting == "none":
-            # No retrieval, return empty list
-            data["top10_references"] = []
-            data["retrieved_examples"] = []
-            
-        elif retrieval_setting == "manual":
-            # Load from predefined few-shot file and store full examples
-            ids, examples = self._load_manual_references(cfg)
-            data["top10_references"] = ids
-            data["retrieved_examples"] = examples  # Store full examples for planner
-            
+            reason = "disabled_by_user"
+        elif retrieval_setting == "manual" and self.task_config["task_name"] == "plot":
+            reason = "manual_plot_references_unavailable"
+        elif not self._reference_file(retrieval_setting == "manual").is_file():
+            reason = "reference_dataset_unavailable"
+        if reason:
+            data["retrieval_status"] = {"status": "skipped", "requested": requested, "reason": reason}
+            if requested != "none":
+                print(f"[Retriever] Retrieval skipped: {reason}. No reference-guided generation is claimed.")
+            return data
+        pool = self._load_pool(retrieval_setting == "manual")
+        if retrieval_setting == "manual":
+            ids = [item["id"] for item in pool[:10]]
         elif retrieval_setting == "random":
-            # Randomly sample from reference pool
-            data["top10_references"] = self._load_random_references(cfg)
-            data["retrieved_examples"] = []  # Planner will load from ref.json
-            
-        elif retrieval_setting == "auto":
-            # Call model to retrieve and parse results
-            data["top10_references"] = await self._retrieve_and_parse(data, cfg)
-            data["retrieved_examples"] = []  # Planner will load from ref.json
+            ids = random.sample([item["id"] for item in pool], min(10, len(pool)))
         else:
-            raise ValueError(f"Unknown retrieval_setting: {retrieval_setting}")
-        
+            ids = await self._retrieve_and_parse(data, self.task_config, pool)
+        valid = {item["id"]: item for item in pool}
+        selected = list(dict.fromkeys(identifier for identifier in ids if isinstance(identifier, str) and identifier in valid))[:10]
+        data["top10_references"] = selected
+        data["retrieved_examples"] = [valid[identifier] for identifier in selected]
+        data["retrieval_status"] = {"status": "succeeded" if selected else "skipped", "requested": requested,
+                                    "selected_ids": selected, "omitted_count": getattr(self, "_omitted_reference_count", 0),
+                                    "reason": None if selected else "no_valid_references"}
         return data
-    
+
     def _load_manual_references(self, cfg: dict) -> tuple:
-        """Load references from predefined few-shot file
-        Returns: (list of IDs, list of full examples)
-        """
-        if cfg["task_name"] == "diagram":
-            few_shot_file = self.exp_config.work_dir / "data/PaperBananaBench/diagram/agent_selected_12.json"
-            with open(few_shot_file, "r", encoding="utf-8") as f:
-                examples = json.load(f)[:10]
-            ids = [item["id"] for item in examples]
-            return ids, examples
-        elif cfg["task_name"] == "plot":
-            # Plot manual mode not yet prepared
-            return [], []
-        else:
-            raise ValueError(f"Unknown task_name: {cfg['task_name']}")
-    
+        pool = self._load_pool(True)[:10] if cfg["task_name"] == "diagram" else []
+        return [item["id"] for item in pool], pool
+
     def _load_random_references(self, cfg: dict) -> list:
-        """Randomly sample references from reference pool"""
-        with open(self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json", "r", encoding="utf-8") as f:
-            candidate_pool = json.load(f)
-        
-        id_list = [item["id"] for item in candidate_pool]
-        # Randomly select up to 10 examples
-        sample_size = min(10, len(id_list))
-        return random.sample(id_list, sample_size) if sample_size > 0 else []
-    
-    async def _retrieve_and_parse(self, data: Dict[str, Any], cfg: dict) -> list:
-        """Call retrieval model and parse results"""
-        content = str(data["content"])
-        visual_intent = data["visual_intent"]
-        
-        user_prompt = f"**Target Input**\n- {cfg['target_labels'][0]}: {visual_intent}\n- {cfg['target_labels'][1]}: {content}\n\n**Candidate Pool**\n"
-        
-        with open(self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json", "r", encoding="utf-8") as f:
-            candidate_pool = json.load(f)
-            if cfg["ref_limit"]:
-                candidate_pool = candidate_pool[:cfg["ref_limit"]]
-        
-        for idx, item in enumerate(candidate_pool):
-            user_prompt += f"Candidate {cfg['candidate_type']} {idx+1}:\n"
-            user_prompt += f"- {cfg['candidate_labels'][0]}: {item['id']}\n"
-            user_prompt += f"- {cfg['candidate_labels'][1]}: {item['visual_intent']}\n"
-            user_prompt += f"- {cfg['candidate_labels'][2]}: {str(item['content'])}\n\n"
-        
-        user_prompt += f"Now, based on the Target Input and the Candidate Pool, {cfg['instruction_suffix']}"
-        content_list = [{"type": "text", "text": user_prompt}]
-        
-        response_list = await generation_utils.call_model_with_retry_async(
-            model_name=self.model_name,
-            contents=content_list,
-            config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
-                temperature=self.exp_config.temperature,
-                candidate_count=1,
-                max_output_tokens=50000,
-            ),
-            max_attempts=5,
-            retry_delay=30,
-        )
-        
-        # Parse the retrieval result (migrated from get_references.py)
-        raw_response = response_list[0].strip()
-        return self._parse_retrieval_result(raw_response, cfg["task_name"])
-    
-    def _parse_retrieval_result(self, raw_response: str, task_name: str) -> list:
-        """
-        Parse retrieval result string into list of reference IDs.
-        Migrated from get_references.py logic.
-        """
-        import json_repair
-        
-        try:
-            parsed = json_repair.loads(raw_response)
-            
-            # Extract the appropriate field based on task type
-            if task_name == "plot":
-                return parsed.get("top10_plots", [])
-            elif task_name == "diagram":
-                return parsed.get("top10_diagrams", [])
-            else:
-                raise ValueError(f"Unknown task_name: {task_name}")
-        except Exception as e:
-            print(f"Warning: Failed to parse retrieval result: {e}")
-            print(f"Raw response: {raw_response[:200]}...")
+        identifiers = [item["id"] for item in self._load_pool()]
+        return random.sample(identifiers, min(10, len(identifiers)))
+
+    async def _retrieve_and_parse(self, data: Dict[str, Any], cfg: dict, pool=None) -> list:
+        pool = self._load_pool() if pool is None else pool
+        if cfg["ref_limit"]:
+            pool = pool[:cfg["ref_limit"]]
+        user_prompt = f"**Target Input**\n- {cfg['target_labels'][0]}: {data['visual_intent']}\n- {cfg['target_labels'][1]}: {data['content']}\n\n**Candidate Pool**\n"
+        included = []
+        # A bounded reference prompt avoids unbounded dataset-driven requests.
+        for index, item in enumerate(pool):
+            chunk = (f"Candidate {cfg['candidate_type']} {index+1}:\n"
+                     f"- {cfg['candidate_labels'][0]}: {item['id']}\n"
+                     f"- {cfg['candidate_labels'][1]}: {item['visual_intent']}\n"
+                     f"- {cfg['candidate_labels'][2]}: {str(item['content'])[:12000]}\n\n")
+            if len(user_prompt) + len(chunk) > 100000:
+                break
+            user_prompt += chunk
+            included.append(item["id"])
+        if not included:
             return []
+        user_prompt += cfg["instruction_suffix"]
+        response = await generation_utils.call_model_with_retry_async(
+            model_name=self.model_name, contents=[{"type": "text", "text": user_prompt}],
+            config=types.GenerateContentConfig(system_instruction=self.system_prompt,
+                temperature=self.exp_config.temperature, candidate_count=1, max_output_tokens=4000),
+            max_attempts=3, retry_delay=2,
+            provider=self.exp_config.main_model_provider or None, overrides=self.exp_config.model_profiles)
+        if not response or not isinstance(response[0], str) or response[0].strip() in ("", "Error"):
+            raise ValueError("Retriever returned no valid selection response")
+        parsed = self._parse_retrieval_result(response[0], cfg["task_name"])
+        return [identifier for identifier in parsed if identifier in included]
+
+    def _parse_retrieval_result(self, raw_response: str, task_name: str) -> list:
+        import json_repair
+        parsed = json_repair.loads(raw_response)
+        if not isinstance(parsed, dict):
+            raise ValueError("Retriever response must be an object")
+        key = "top10_plots" if task_name == "plot" else "top10_diagrams"
+        identifiers = parsed.get(key)
+        if not isinstance(identifiers, list) or any(not isinstance(value, str) for value in identifiers):
+            raise ValueError("Retriever response must contain a list of reference IDs")
+        return list(dict.fromkeys(identifiers))[:10]
 
 
 

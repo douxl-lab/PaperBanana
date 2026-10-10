@@ -12,207 +12,103 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Polish Agent - Applies style guidelines to ground truth images
-"""
+"""Reference-image polishing through capability-checked editing adapters."""
+from __future__ import annotations
 
+import asyncio
 import base64
-import io
 from pathlib import Path
-from typing import Dict, Any
-from google.genai import types
-from PIL import Image
+from typing import Any, Dict
 
 from utils import generation_utils, image_utils
 from utils.legacy_generation_options import image_size_from_data
+from utils.model_registry import resolve_model
 from .base_agent import BaseAgent
 
 
 def _load_image_as_base64(image_path: str) -> str:
-    """Load an image from path and convert to base64"""
-    try:
-        with open(image_path, 'rb') as f:
-            img_data = f.read()
-            return base64.b64encode(img_data).decode('utf-8')
-    except Exception as e:
-        print(f"❌ Error loading image {image_path}: {e}")
-        return None
+    return base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
 
 
 class PolishAgent(BaseAgent):
-    """Polish Agent to apply style guidelines to ground truth images"""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.image_gen_model_name = self.exp_config.image_gen_model_name  # e.g., gemini-3-pro-image-preview
-        self.main_model_name = self.exp_config.main_model_name   # e.g., gemini-3-pro-preview
-        
-        # Task-specific configurations
-        if self.exp_config.task_name == "plot":
-            self.style_guide_filename = "neurips2025_plot_style_guide.md"
-            self.suggestion_system_prompt = PLOT_SUGGESTION_SYSTEM_PROMPT
-            self.task_config = {
-                "task_name": "plot",
-            }
-        else:
-            self.style_guide_filename = "neurips2025_diagram_style_guide.md"
-            self.suggestion_system_prompt = DIAGRAM_SUGGESTION_SYSTEM_PROMPT
-            self.task_config = {
-                "task_name": "diagram",
-            }
+        self.image_gen_model_name = self.exp_config.image_gen_model_name
+        self.main_model_name = self.exp_config.main_model_name
+        plot = self.exp_config.task_name == "plot"
+        self.style_guide_filename = "neurips2025_plot_style_guide.md" if plot else "neurips2025_diagram_style_guide.md"
+        self.suggestion_system_prompt = PLOT_SUGGESTION_SYSTEM_PROMPT if plot else DIAGRAM_SUGGESTION_SYSTEM_PROMPT
+        self.task_config = {"task_name": "plot" if plot else "diagram"}
 
-    async def _generate_suggestions(self, gt_image_b64: str, style_guide: str) -> str:
-        """Step 1: Generate improvement suggestions based on style guide"""
-        user_prompt = f"Here is the style guide:\n{style_guide}\n\nPlease analyze the provided image against this style guide and list up to 10 specific improvement suggestions to make the image visually more appealing. If the image is already perfect, just say 'No changes needed'."
-        
-        content_list = [
-            {"type": "text", "text": user_prompt},
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": gt_image_b64
-                }
-            }
-        ]
+    def close(self):
+        pass
 
-        try:
-            response_list = await generation_utils.call_model_with_retry_async(
-                model_name=self.main_model_name,
-                contents=content_list,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.suggestion_system_prompt,
-                    temperature=1,
-                    candidate_count=1,
-                    max_output_tokens=50000,
-                ),
-                max_attempts=3,
-                retry_delay=10,
-            )
-            return response_list[0] if response_list else ""
-        except Exception as e:
-            print(f"❌ Error during suggestion generation: {e}")
-            return ""
+    async def aclose(self):
+        self.close()
+
+    async def _generate_suggestions(self, gt_image_b64, style_guide):
+        prompt = f"Here is the style guide:\n{style_guide}\n\nAnalyze the reference image. List up to 10 presentation improvements. Preserve exact labels, scientific topology and data. If no changes are needed, say 'No changes needed'."
+        responses = await generation_utils.call_model_with_retry_async(self.main_model_name,
+            [{"type": "text", "text": prompt}, {"type": "image", "data": gt_image_b64}],
+            {"system_prompt": self.suggestion_system_prompt, "temperature": self.exp_config.temperature,
+             "candidate_count": 1, "max_output_tokens": 8192},
+            provider=getattr(self.exp_config, "main_model_provider", None) or None,
+            overrides=getattr(self.exp_config, "model_profiles", None), max_attempts=3, retry_delay=1,
+            timeout=self.exp_config.candidate_timeout_seconds, total_timeout=self.exp_config.candidate_timeout_seconds)
+        return responses[0]
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Two-step polish process:
-        1. Generate improvement suggestions
-        2. Apply suggestions to generate polished image
-        """
-        cfg = self.task_config
-        task_name = cfg["task_name"]
-        
-        # Get GT image path and resolve relative path
-        gt_image_path_rel = data.get("path_to_gt_image")
-        if not gt_image_path_rel:
-            print(f"⚠️  No GT image path found in data")
-            return data
-        
-        # Resolve relative path using work_dir
-        gt_image_path = self.exp_config.work_dir / f"data/PaperBananaBench/{task_name}" / gt_image_path_rel
-        
-        # Load GT image as base64
-        gt_image_b64 = _load_image_as_base64(str(gt_image_path))
-        if not gt_image_b64:
-            print(f"⚠️  Failed to load GT image from {gt_image_path}")
-            return data
-        
-        # Load style guide
-        style_guide_path = self.exp_config.work_dir / "style_guides" / self.style_guide_filename
-        try:
-            with open(style_guide_path, "r", encoding="utf-8") as f:
-                style_guide = f.read()
-        except Exception as e:
-            print(f"❌ Error loading style guide from {style_guide_path}: {e}")
-            return data
-            
-        print(f"🎨 [Step 1] Generating suggestions for {task_name}...")
-        suggestions = await self._generate_suggestions(gt_image_b64, style_guide)
-        
-        if not suggestions or "No changes needed" in suggestions:
-            print(f"✨ No changes needed for this image.")
-            # If no changes needed, we might want to skip generation or just return original
-            # specific requirement from user: "其他情况下返回原图即可" -> implied by "No changes needed" logic
-            # However, user's previous prompt logic was "If it ALREADY meets standards: Generate exactly as it is"
-            # Here we can just skip the generation call to save cost if suggestions say so.
-            # But the user also said "re-call ", so let's check.
-            pass
-
-        if suggestions:
-            data[f"suggestions_{task_name}"] = suggestions
-
-        print(f"📝 Suggestions: {suggestions[:200]}...")
-        
-        # Step 2: Polish Image using suggestions
-        print(f"🎨 [Step 2] Polishing image with suggestions...")
-        user_prompt = f"Please polish this image based on the following suggestions:\n\n{suggestions}\n\nPolished Image:"
-        
-        # Build content list with GT image
-        content_list = [
-            {"type": "text", "text": user_prompt},
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": gt_image_b64
-                }
-            }
-        ]
-        
-        # Generate polished image
-        aspect_ratio = data.get("additional_info", {}).get("rounded_ratio", "16:9")
-        image_size = image_size_from_data(data)
-        try:
-            if generation_utils.openrouter_client is not None:
-                image_config = {
-                    "system_prompt": self.system_prompt,
-                    "temperature": self.exp_config.temperature,
-                    "aspect_ratio": aspect_ratio,
-                    "image_size": image_size,
-                }
-                response_list = await generation_utils.call_openrouter_image_generation_with_retry_async(
-                    model_name=self.image_gen_model_name,
-                    contents=content_list,
-                    config=image_config,
-                    max_attempts=5,
-                    retry_delay=30,
-                )
-            else:
-                response_list = await generation_utils.call_gemini_with_retry_async(
-                    model_name=self.image_gen_model_name,
-                    contents=content_list,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt,
-                        temperature=self.exp_config.temperature,
-                        candidate_count=1,
-                        max_output_tokens=50000,
-                        response_modalities=["IMAGE"],
-                        image_config=types.ImageConfig(
-                            aspect_ratio=aspect_ratio,
-                            image_size=image_size,
-                        ),
-                    ),
-                    max_attempts=5,
-                    retry_delay=30,
-                )
-            
-            if response_list and response_list[0]:
-                # Convert PNG to JPG
-                converted_jpg = image_utils.convert_png_b64_to_jpg_b64(response_list[0])
-                if converted_jpg:
-                    output_key = f"polished_{task_name}_base64_jpg"
-                    data[output_key] = converted_jpg
-                else:
-                    print(f"⚠️  Image conversion failed")
-            else:
-                print(f"⚠️  No response from model")
-                
-        except Exception as e:
-            print(f"❌ Error during image generation: {e}")
-        
+        task = self.task_config["task_name"]
+        relative = data.get("path_to_gt_image")
+        if not relative:
+            raise generation_utils.ModelConfigurationError("Polishing requires path_to_gt_image")
+        root = (self.exp_config.work_dir / "data" / "PaperBananaBench" / task).resolve()
+        image_path = (root / relative).resolve()
+        if not image_path.is_relative_to(root):
+            raise generation_utils.ModelConfigurationError("Ground-truth image path escapes the dataset")
+        original = _load_image_as_base64(str(image_path))
+        meta = generation_utils.image_metadata(original)
+        style_path = getattr(self.exp_config, "style_guide_path", None) or self.exp_config.work_dir / "style_guides" / self.style_guide_filename
+        style_guide = Path(style_path).read_text(encoding="utf-8")
+        suggestions = await self._generate_suggestions(original, style_guide)
+        data[f"suggestions_{task}"] = suggestions
+        stem = f"polished_{task}"
+        if suggestions.strip().rstrip(".") == "No changes needed":
+            encoded, mime = original, meta["mime_type"]
+            result = None
+        else:
+            provider = getattr(self.exp_config, "image_gen_provider", None) or None
+            overrides = getattr(self.exp_config, "model_profiles", None)
+            profile = resolve_model(self.image_gen_model_name, provider, "image_edit", overrides)
+            prompt = f"Polish only the described presentation details. Preserve all scientific content and exact labels.\nSuggestions:\n{suggestions}"
+            system = "You are a scientific figure editor. Preserve reference image content and data."
+            metadata, spec = {}, data.get("figure_spec")
+            if getattr(self.exp_config, "rfs_enabled", False):
+                from rfs.prompt_compiler import compile_prompt
+                if not isinstance(spec, dict):
+                    raise generation_utils.ModelConfigurationError("RFS polish requires an explicit FigureSpec")
+                compiled = compile_prompt(spec, prompt, profile.compiler_capabilities(), candidate_id=data.get("candidate_id", "0"), stage="candidate")
+                prompt, system, metadata = compiled.prompt, compiled.system_prompt, compiled.metadata
+            options = {"system_prompt": system or "", "temperature": self.exp_config.temperature,
+                       "aspect_ratio": data.get("additional_info", {}).get("rounded_ratio", "1:1"),
+                       "image_size": image_size_from_data(data), "output_format": "png", "background": "opaque"}
+            result = await generation_utils.generate_images(self.image_gen_model_name,
+                [{"type": "text", "text": prompt}, {"type": "image", "data": original, "mime_type": meta["mime_type"]}],
+                options, operation="image_edit", provider=provider, overrides=overrides, max_attempts=3, retry_delay=1,
+                timeout=self.exp_config.candidate_timeout_seconds, total_timeout=self.exp_config.candidate_timeout_seconds)
+            sample = result.samples[-1]
+            encoded, mime = sample.image_base64, sample.image_mime
+        data[stem + "_base64"] = encoded
+        data[stem + "_image_mime"] = mime
+        data[stem + "_base64_png"] = generation_utils.lossless_png_base64(encoded)
+        preview = await asyncio.to_thread(image_utils.convert_png_b64_to_jpg_b64, encoded)
+        if not preview:
+            raise generation_utils.GenerationResponseError("Polish preview conversion failed", category="image_decode")
+        data[stem + "_base64_jpg"] = preview
+        if getattr(self.exp_config, "rfs_enabled", False) and result is not None:
+            from .visualizer_agent import VisualizerAgent
+            VisualizerAgent._record_artifact(self, data, stem, result, encoded, mime, spec, suggestions, "candidate", metadata,
+                                            reference_key="ground_truth")
         return data
 
 

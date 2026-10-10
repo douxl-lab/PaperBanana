@@ -1,16 +1,19 @@
-google-genai
-gradio>=5.0.0
-streamlit
-asyncio
-aiofiles
-pillow
-numpy
-tqdm
-json_repair
-anthropic
-openai
-matplotlib
-python-dotenv
-pyyaml
-google-auth
-huggingface_hub
+# Python 3.12 is the tested runtime. See requirements-tested.txt for the exact
+# environment used for the RFS acceptance suite; no provider key is needed.
+google-genai>=2.29,<3
+gradio>=6.30,<7
+streamlit>=1.65,<2
+aiofiles>=25.1,<26
+pillow>=12.3,<13
+numpy>=2.3,<3
+tqdm>=4.67,<5
+json_repair>=0.30,<1
+anthropic>=1.13,<2
+openai>=3.28,<4
+matplotlib>=3.10,<4
+python-dotenv>=1.0,<2
+pyyaml>=6,<7
+google-auth>=2,<3
+huggingface_hub>=2.2,<3
+httpx[socks]>=0.28,<1
+jsonschema>=4.20,<5

@@ -28,6 +28,7 @@ from pathlib import Path
 import sys
 import os
 from datetime import datetime
+import html
 
 # ---------------------------------------------------------------------------
 # Logo (base64-encoded for reliable serving in Gradio)
@@ -50,8 +51,6 @@ configs_dir = Path(__file__).parent / "configs"
 config_path = configs_dir / "model_config.yaml"
 template_path = configs_dir / "model_config.template.yaml"
 
-if not config_path.exists() and template_path.exists():
-    shutil.copy2(template_path, config_path)
 
 from agents.planner_agent import PlannerAgent
 from agents.visualizer_agent import VisualizerAgent
@@ -67,6 +66,11 @@ from utils.legacy_generation_options import (
 )
 from utils.legacy_ui_results import build_evolution_stages, resolve_final_output
 from utils.paperviz_processor import PaperVizProcessor
+from utils.model_registry import get_default_model, list_model_options, resolve_model
+from utils.legacy_ui_refinement import (
+    refine_image, final_image, final_image_bytes, pil_to_png_bytes,
+    new_run_id, atomic_write, save_results_json, summarize_results,
+)
 
 model_config_data = {}
 if config_path.exists():
@@ -127,7 +131,7 @@ def create_sample_inputs(
     for i in range(num_copies):
         c = base_input.copy()
         c["filename"] = f"demo_input_candidate_{i}"
-        c["candidate_id"] = i
+        c["candidate_id"] = str(i)
         inputs.append(c)
     return inputs
 
@@ -145,8 +149,12 @@ async def process_parallel_candidates(
         retrieval_setting=retrieval_setting,
         main_model_name=main_model_name,
         image_gen_model_name=image_gen_model_name,
+        main_model_provider=resolve_model(main_model_name, operation="text", overrides=model_config_data.get("defaults", {}).get("model_profiles", {})).provider if main_model_name else "",
+        image_gen_provider=resolve_model(image_gen_model_name, operation="image_generate", overrides=model_config_data.get("defaults", {}).get("model_profiles", {})).provider if image_gen_model_name else "",
         work_dir=Path(__file__).parent,
     )
+    from utils.generation_utils import configure_generation_async, close_clients_async
+    await configure_generation_async(exp_config.config_path)
     processor = PaperVizProcessor(
         exp_config=exp_config,
         vanilla_agent=VanillaAgent(exp_config=exp_config),
@@ -158,81 +166,38 @@ async def process_parallel_candidates(
         polish_agent=PolishAgent(exp_config=exp_config),
     )
     results = []
-    async for result_data in processor.process_queries_batch(data_list, max_concurrent=10, do_eval=False):
-        result_data["task_name"] = task_name
-        results.append(result_data)
+    try:
+        async for result_data in processor.process_queries_batch(data_list, max_concurrent=exp_config.max_concurrent, do_eval=False):
+            result_data["task_name"] = task_name
+            results.append(result_data)
+    finally:
+        try:
+            close = getattr(processor, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            await close_clients_async()
     return results
 
 
-async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9", image_size="2K"):
-    image_model = get_config_val("defaults", "image_gen_model_name", "IMAGE_GEN_MODEL_NAME", "")
-    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    # Path 1: OpenRouter
+async def refine_image_with_nanoviz(
+    image_bytes, edit_prompt, aspect_ratio="21:9", image_size="2K", model_name=None,
+):
+    """Backward-compatible name for shared explicit-provider image editing."""
+    model_name = model_name or get_config_val(
+        "defaults", "image_gen_model_name", "IMAGE_GEN_MODEL_NAME", get_default_model("image"),
+    )
+    from utils.generation_utils import configure_generation_async, close_clients_async
+    await configure_generation_async(config_path)
     try:
-        from utils.generation_utils import call_openrouter_image_generation_with_retry_async
-        _has_openrouter = True
-    except ImportError:
-        _has_openrouter = False
-    openrouter_api_key = get_config_val("api_keys", "openrouter_api_key", "OPENROUTER_API_KEY", "")
-    if _has_openrouter and openrouter_api_key:
-        try:
-            contents = [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
-                {"type": "text", "text": edit_prompt},
-            ]
-            cfg = {"system_prompt": "", "temperature": 1.0, "aspect_ratio": aspect_ratio, "image_size": image_size}
-            result = await call_openrouter_image_generation_with_retry_async(
-                model_name=image_model, contents=contents, config=cfg, max_attempts=3, retry_delay=10, error_context="refine_image",
-            )
-            if result and result[0] != "Error":
-                return base64.b64decode(result[0]), "Image refined successfully! (via OpenRouter)"
-        except Exception as e:
-            print(f"OpenRouter refine failed: {e}, falling back...")
+        return await refine_image(image_bytes, edit_prompt, model_name=model_name,
+                                  aspect_ratio=aspect_ratio, image_size=image_size,
+                                  overrides=model_config_data.get("defaults", {}).get("model_profiles", model_config_data.get("model_profiles", {})))
+    finally:
+        await close_clients_async()
 
-    # Path 2 & 3: Gemini native SDK
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError:
-        return None, "Error: google-genai SDK not installed and OpenRouter unavailable."
 
-    google_api_key = get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", "")
-    project_id = get_config_val("google_cloud", "project_id", "GOOGLE_CLOUD_PROJECT", "")
 
-    if google_api_key:
-        client = genai.Client(api_key=google_api_key)
-        via = "Google API key"
-    elif project_id:
-        location = get_config_val("google_cloud", "location", "GOOGLE_CLOUD_LOCATION", "global")
-        client = genai.Client(vertexai=True, project=project_id, location=location)
-        via = "Vertex AI"
-    else:
-        return None, "Error: No API credentials configured."
-
-    try:
-        contents = [
-            types.Part.from_text(text=edit_prompt),
-            types.Part.from_bytes(mime_type="image/jpeg", data=image_bytes),
-        ]
-        gen_config = types.GenerateContentConfig(
-            temperature=1.0, max_output_tokens=8192, response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
-        )
-        response = await asyncio.to_thread(
-            client.models.generate_content, model=image_model, contents=contents, config=gen_config,
-        )
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, "inline_data") and part.inline_data:
-                    data = part.inline_data.data
-                    if isinstance(data, bytes):
-                        return data, f"Image refined successfully! (via {via})"
-                    elif isinstance(data, str):
-                        return base64.b64decode(data), f"Image refined successfully! (via {via})"
-        return None, f"No image data found in {via} response"
-    except Exception as e:
-        return None, f"{via} error: {str(e)}"
 
 
 def get_evolution_stages(result, exp_mode):
@@ -242,7 +207,7 @@ def get_evolution_stages(result, exp_mode):
 def get_final_image(result, exp_mode):
     """Return (PIL.Image, desc_text) for the best available stage."""
     selection = resolve_final_output(result, exp_mode=exp_mode)
-    img = base64_to_image(result.get(selection.image_key)) if selection.image_key else None
+    img = final_image(result, exp_mode)
     desc = clean_text(result.get(selection.text_key, "")) if selection.text_key else ""
     return img, desc
 
@@ -425,8 +390,8 @@ CUSTOM_CSS = """
 
 def build_app():
 
-    default_main_model = get_config_val("defaults", "main_model_name", "MAIN_MODEL_NAME", "gemini-3.1-pro-preview")
-    default_image_model = get_config_val("defaults", "image_gen_model_name", "IMAGE_GEN_MODEL_NAME", "gemini-3.1-flash-image-preview")
+    default_main_model = get_config_val("defaults", "main_model_name", "MAIN_MODEL_NAME", get_default_model("text"))
+    default_image_model = get_config_val("defaults", "image_gen_model_name", "IMAGE_GEN_MODEL_NAME", get_default_model("image"))
 
     with gr.Blocks(title="PaperBanana") as app:
         # ---- State to hold results across interactions ----
@@ -471,37 +436,36 @@ def build_app():
         # ================================================================
         with gr.Accordion("API Keys", open=False):
             gr.Markdown(
-                "**You do not need both keys.** Fill **at least one**: **OpenRouter** *or* **Google (Gemini)**. "
-                "If both are set, OpenRouter is preferred for automatic routing when available."
+                "Single-user server: applied credentials are shared by all browser sessions in this process. "
+                "The selected model determines the provider. Use openrouter/<provider>/<model> for OpenRouter."
             )
             with gr.Row():
                 openrouter_key_input = gr.Textbox(
                     label="OpenRouter API Key (optional)", type="password", placeholder="sk-or-...",
-                    value=get_config_val("api_keys", "openrouter_api_key", "OPENROUTER_API_KEY", ""),
+                    value="",
                 )
                 google_key_input = gr.Textbox(
                     label="Google API Key (optional)", type="password", placeholder="AIza...",
-                    value=get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", ""),
+                    value="",
                 )
-            gr.Markdown("*Keys are used only for this session and never stored.*")
+                openai_key_input = gr.Textbox(label="OpenAI API Key (optional)", type="password", value="")
+                anthropic_key_input = gr.Textbox(label="Anthropic API Key (optional)", type="password", value="")
+            gr.Markdown("Keys remain in server-process memory until exit; they are not written to results or config. Blank inputs keep existing credentials. Do not expose this UI to untrusted users.")
 
-            def apply_keys(or_key, g_key):
-                if or_key:
-                    os.environ["OPENROUTER_API_KEY"] = or_key
-                if g_key:
-                    os.environ["GOOGLE_API_KEY"] = g_key
+            def apply_keys(or_key, g_key, o_key, a_key):
+                for variable, value in (("OPENROUTER_API_KEY", or_key), ("GOOGLE_API_KEY", g_key),
+                                        ("OPENAI_API_KEY", o_key), ("ANTHROPIC_API_KEY", a_key)):
+                    if value:
+                        os.environ[variable] = value
                 from utils.generation_utils import reinitialize_clients
                 initialized = reinitialize_clients()
                 if initialized:
-                    return f"Clients initialized: {', '.join(initialized)}."
-                return (
-                    "Warning: no API clients could be initialized. "
-                    "Enter at least one key—OpenRouter or Google (Gemini)."
-                )
+                    return f"Server-process clients initialized: {', '.join(initialized)}."
+                return "No API clients initialized; configure credentials for the selected model provider."
 
             apply_keys_btn = gr.Button("Apply Keys", size="sm")
             keys_status = gr.Textbox(visible=False)
-            apply_keys_btn.click(apply_keys, inputs=[openrouter_key_input, google_key_input], outputs=[keys_status])
+            apply_keys_btn.click(apply_keys, inputs=[openrouter_key_input, google_key_input, openai_key_input, anthropic_key_input], outputs=[keys_status], concurrency_id="model_requests", concurrency_limit=1)
 
         # ================================================================
         # TABS
@@ -561,16 +525,18 @@ def build_app():
                             label="Figure Size",
                         )
                         max_critic_rounds = gr.Slider(
-                            minimum=1, maximum=5, value=3, step=1,
+                            minimum=0, maximum=5, value=3, step=1,
                             label="Max Critic Rounds",
                         )
-                        main_model_name = gr.Textbox(
-                            label="Model Name",
+                        main_model_name = gr.Dropdown(
+                            choices=list(dict.fromkeys([default_main_model, *list_model_options("text")])),
+                            allow_custom_value=True, label="Model Name",
                             info="Model name to use for reasoning",
                             value=default_main_model,
                         )
-                        image_model_name = gr.Textbox(
-                            label="Image Generation Model",
+                        image_model_name = gr.Dropdown(
+                            choices=list(dict.fromkeys([default_image_model, *list_model_options("image")])),
+                            allow_custom_value=True, label="Image Generation Model",
                             info="Model for generating diagram images",
                             value=default_image_model,
                         )
@@ -648,7 +614,9 @@ def build_app():
 
                     n_cands = int(n_cands)
                     max_rounds = int(max_rounds)
-                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    if not 1 <= n_cands <= 20 or not 0 <= max_rounds <= 5:
+                        raise gr.Error("Choose 1–20 candidates and 0–5 critic rounds.")
+                    timestamp_str = new_run_id()
 
                     progress(0, desc="Preparing inputs...")
                     input_data = create_sample_inputs(
@@ -660,38 +628,31 @@ def build_app():
 
                     progress(0.1, desc=f"Generating {n_cands} candidates in parallel...")
                     try:
-                        loop = asyncio.new_event_loop()
-                        results = loop.run_until_complete(
-                            process_parallel_candidates(
-                                input_data, exp_mode=pipe_mode, retrieval_setting=ret_setting,
-                                main_model_name=m_model, image_gen_model_name=img_model,
-                                task_name=task_name,
-                            )
-                        )
-                        loop.close()
-                    except Exception as e:
-                        raise gr.Error(f"Generation failed: {e}")
+                        results = asyncio.run(process_parallel_candidates(
+                            input_data, exp_mode=pipe_mode, retrieval_setting=ret_setting,
+                            main_model_name=m_model, image_gen_model_name=img_model,
+                            task_name=task_name,
+                        ))
+                    except Exception as exc:
+                        raise gr.Error(f"Generation failed ({type(exc).__name__}); check model configuration and credentials.")
 
                     progress(0.9, desc="Saving results...")
 
-                    # Save JSON
                     results_dir = Path(__file__).parent / "results" / "demo"
-                    results_dir.mkdir(parents=True, exist_ok=True)
-                    json_filename = results_dir / f"demo_{timestamp_str}.json"
-                    try:
-                        with open(json_filename, "w", encoding="utf-8", errors="surrogateescape") as f:
-                            s = json.dumps(results, ensure_ascii=False, indent=4)
-                            s = s.encode("utf-8", "ignore").decode("utf-8")
-                            f.write(s)
-                    except Exception:
-                        json_filename = None
+                    json_filename = None
+                    save_warning = ""
+                    if save_results != "No":
+                        try:
+                            json_filename = save_results_json(results, results_dir, timestamp_str)
+                        except OSError:
+                            save_warning = " JSON save failed."
 
                     # Build gallery images
                     gallery_images = []
                     for idx, res in enumerate(results):
                         img, _ = get_final_image(res, pipe_mode)
                         if img:
-                            gallery_images.append((img, f"Candidate {idx}"))
+                            gallery_images.append((img, f"Candidate {res.get('candidate_id', idx)} ({res.get('status', 'legacy output')})"))
 
                     # Build evolution HTML
                     evo_parts = []
@@ -700,7 +661,7 @@ def build_app():
                         if stages:
                             evo_parts.append(f"<h4>Candidate {idx} ({len(stages)} stages)</h4>")
                             for st in stages:
-                                evo_parts.append(f'<span class="evo-stage-title">{st["name"]}</span>: {st["description"]}<br/>')
+                                evo_parts.append(f'<span class="evo-stage-title">{html.escape(st["name"])}</span>: {html.escape(st["description"])}<br/>')
                     evo_html = "".join(evo_parts) if evo_parts else "<p>No evolution data available.</p>"
 
                     # Build ZIP
@@ -717,13 +678,14 @@ def build_app():
                                         img.save(ib, format="PNG")
                                         zf.writestr(f"candidate_{idx}.png", ib.getvalue())
                             buf.seek(0)
-                            with open(zip_filename, "wb") as wf:
-                                wf.write(buf.getvalue())
+                            atomic_write(zip_filename, buf.getvalue())
                             zip_path = str(zip_filename)
-                        except Exception:
-                            pass
+                        except OSError:
+                            save_warning += " ZIP save failed."
 
-                    status = f"Generated {len(results)} candidates at {datetime.now().strftime('%H:%M:%S')}."
+                    counts = summarize_results(results, pipe_mode)
+                    status = f"{counts['success']} succeeded, {counts['failed']} failed, {counts['incomplete']} incomplete candidates."
+                    status += save_warning
                     if json_filename and Path(str(json_filename)).exists():
                         status += f" JSON saved to {Path(str(json_filename)).name}."
 
@@ -750,6 +712,7 @@ def build_app():
                         results_gallery, evolution_html, zip_file_output, status_text,
                         gen_results_state, gen_mode_state, gen_timestamp_state,
                     ],
+                    concurrency_id="model_requests", concurrency_limit=1,
                 )
 
             # ============================================================
@@ -757,47 +720,44 @@ def build_app():
             # ============================================================
             with gr.TabItem("Refine Image"):
                 gr.Markdown("### Refine and upscale your diagram to high resolution (2K/4K)")
-                gr.Markdown("Upload an image, describe changes, and get a high-res version.")
+                gr.Markdown("Upload an image and describe changes. Resolution and ratio must be supported by the selected model; legacy OpenAI image models use 1K with 1:1, 3:2, or 2:3.")
 
                 with gr.Row():
                     with gr.Column():
-                        refine_upload = gr.Image(label="Upload Image", type="pil", height=400)
+                        refine_upload = gr.Image(label="Upload Image", type="filepath", image_mode=None, format="png", height=400)
                     with gr.Column():
                         refine_prompt = gr.Textbox(
                             label="Edit Instructions", lines=6,
                             placeholder="E.g., 'Change the color scheme to match academic paper style' or 'Keep everything the same but output in higher resolution'",
                         )
                         with gr.Row():
-                            refine_resolution = gr.Dropdown(choices=["2K", "4K"], value="2K", label="Resolution")
-                            refine_aspect = gr.Dropdown(choices=["21:9", "16:9", "3:2"], value="21:9", label="Aspect Ratio")
+                            refine_resolution = gr.Dropdown(choices=["1K", "2K", "4K"], value="2K", label="Resolution")
+                            refine_aspect = gr.Dropdown(choices=["1:1", "21:9", "16:9", "3:2", "2:3"], value="21:9", label="Aspect Ratio")
+                        refine_model = gr.Dropdown(
+                            choices=list(dict.fromkeys([default_image_model, *list_model_options("image_edit")])),
+                            allow_custom_value=True, value=default_image_model, label="Image Editing Model",
+                        )
                         refine_btn = gr.Button("Refine Image", variant="primary", elem_classes=["orange-btn"])
 
                 refine_status = gr.Textbox(label="Status", interactive=False)
 
                 with gr.Row():
-                    refine_before = gr.Image(label="Before", interactive=False, height=400)
-                    refine_after = gr.Image(label="After", interactive=False, height=400)
+                    refine_before = gr.Image(label="Before", image_mode=None, format="png", interactive=False, height=400)
+                    refine_after = gr.Image(label="After", image_mode=None, format="png", interactive=False, height=400)
                 refine_download = gr.File(label="Download refined image")
 
-                def run_refine(pil_img, prompt, resolution, ar):
-                    if pil_img is None:
+                def run_refine(image_path, prompt, resolution, ar, model_name):
+                    if image_path is None:
                         raise gr.Error("Please upload an image first.")
                     if not prompt:
                         raise gr.Error("Please provide edit instructions.")
 
-                    buf = BytesIO()
-                    pil_img.save(buf, format="JPEG")
-                    image_bytes = buf.getvalue()
-
-                    loop = asyncio.new_event_loop()
-                    try:
-                        refined_bytes, msg = loop.run_until_complete(
-                            refine_image_with_nanoviz(image_bytes, prompt, aspect_ratio=ar, image_size=resolution)
-                        )
-                    except Exception as e:
-                        raise gr.Error(f"Refinement error: {e}")
-                    finally:
-                        loop.close()
+                    image_bytes = Path(image_path).read_bytes()
+                    with Image.open(BytesIO(image_bytes)) as source_image:
+                        pil_img = source_image.copy()
+                    refined_bytes, msg = asyncio.run(refine_image_with_nanoviz(
+                        image_bytes, prompt, aspect_ratio=ar, image_size=resolution, model_name=model_name,
+                    ))
 
                     if not refined_bytes:
                         raise gr.Error(msg)
@@ -805,18 +765,19 @@ def build_app():
                     refined_img = Image.open(BytesIO(refined_bytes))
 
                     # Save to temp file for download
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ts = new_run_id()
                     out_dir = Path(__file__).parent / "results" / "demo"
                     out_dir.mkdir(parents=True, exist_ok=True)
                     out_path = out_dir / f"refined_{resolution}_{ts}.png"
-                    refined_img.save(str(out_path), format="PNG")
+                    atomic_write(out_path, pil_to_png_bytes(refined_img))
 
                     return pil_img, refined_img, str(out_path), msg
 
                 refine_btn.click(
                     fn=run_refine,
-                    inputs=[refine_upload, refine_prompt, refine_resolution, refine_aspect],
+                    inputs=[refine_upload, refine_prompt, refine_resolution, refine_aspect, refine_model],
                     outputs=[refine_before, refine_after, refine_download, refine_status],
+                    concurrency_id="model_requests", concurrency_limit=1,
                 )
 
         # ================================================================

@@ -1,0 +1,129 @@
+{
+  "schema_version": "1.0.0",
+  "figure_id": "encoder-pipeline",
+  "kind": "diagram",
+  "nodes": [
+    {
+      "id": "input",
+      "label": "Input features",
+      "kind": "input",
+      "evidence": [
+        {
+          "source_id": "input-source",
+          "quote": "Input features are processed by an encoder to produce an embedding."
+        }
+      ]
+    },
+    {
+      "id": "encoder",
+      "label": "Encoder",
+      "kind": "processing",
+      "evidence": [
+        {
+          "source_id": "input-source",
+          "quote": "Input features are processed by an encoder to produce an embedding."
+        }
+      ]
+    },
+    {
+      "id": "embedding",
+      "label": "Embedding",
+      "kind": "output",
+      "evidence": [
+        {
+          "source_id": "input-source",
+          "quote": "Input features are processed by an encoder to produce an embedding."
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "input-encoder",
+      "source": "input",
+      "target": "encoder",
+      "kind": "data_flow",
+      "directed": true,
+      "evidence": [
+        {
+          "source_id": "input-source",
+          "quote": "Input features are processed by an encoder to produce an embedding."
+        }
+      ]
+    },
+    {
+      "id": "encoder-embedding",
+      "source": "encoder",
+      "target": "embedding",
+      "kind": "data_flow",
+      "directed": true,
+      "evidence": [
+        {
+          "source_id": "input-source",
+          "quote": "Input features are processed by an encoder to produce an embedding."
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "id": "method",
+      "label": "Encoder pipeline",
+      "node_ids": [
+        "encoder"
+      ],
+      "evidence": [
+        {
+          "source_id": "input-source",
+          "quote": "Input features are processed by an encoder to produce an embedding."
+        }
+      ]
+    }
+  ],
+  "labels": [],
+  "datasets": [],
+  "sources": [
+    {
+      "id": "input-source",
+      "kind": "user_text",
+      "content": "Input features are processed by an encoder to produce an embedding.",
+      "sha256": "79c7e603367f05c3b165d779b1fc29b7bdbbacf12c44ba2f3fe14dc20364db97"
+    }
+  ],
+  "constraints": {
+    "locked": true,
+    "required_labels": [
+      "Input features",
+      "Encoder",
+      "Embedding"
+    ],
+    "layout": [
+      "Keep the input, encoder and embedding ordered left to right."
+    ],
+    "visual": [
+      "White background; legible dark text."
+    ],
+    "negative": [
+      "No invented components or metric values."
+    ]
+  },
+  "design": {
+    "layout": "Three-column left-to-right pipeline.",
+    "composition": "Input and output flanking a softly framed encoder group; orthogonal connectors.",
+    "palette": [
+      "#FFFFFF",
+      "#2F6B9A",
+      "#263238"
+    ],
+    "typography": "Clean sans serif, exact labels and adequate label margins.",
+    "candidate_variation": ""
+  },
+  "provenance": {
+    "origin": "user_supplied",
+    "scientific_verification": "unverified",
+    "external_consumer_verified": false,
+    "notes": [
+      "Illustrative user-provided fixture; no external consumer acceptance."
+    ]
+  }
+}

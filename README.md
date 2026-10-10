@@ -14,6 +14,17 @@ This repository forked the content of that repo and aims to keep evolving toward
 
 
 
+## RFS compatibility upgrade
+
+This fork preserves the five-agent pipeline and adds a versioned Research Figure
+Studio exchange layer, explicit model capabilities, bounded execution, and
+resumable candidate runs. See [RFS guide](docs/RFS_GUIDE.md),
+[upgrade plan](docs/RFS_UPGRADE_PLAN.md), [acceptance results](docs/TEST_RESULTS.md), and
+[model/API evidence](docs/MODEL_API_AUDIT.md). Generated scientific structure
+still requires checking against the source paper. External editable-rebuilding
+consumers must implement the documented exchange contract; native PPTX/draw.io
+reconstruction is not performed by this engine.
+
 ## Latest News
 - **2026-03-24**: PaperBanana is now [hosted on Hugging Face Spaces](https://huggingface.co/spaces/dwzhu/PaperBanana). Many thanks to the Hugging Face team for their support.
 - **2026-03-11**: Published PaperBanana as a [ClawHub skill](https://clawhub.ai/skills/paperbanana) — install with `clawhub install paperbanana`.
@@ -48,14 +59,14 @@ PaperBanana achieves high-quality academic illustration generation by orchestrat
 
 ### Step1: Clone the Repo
 ```bash
-git clone https://github.com/dwzhu-pku/PaperBanana.git
+git clone https://github.com/douxl-lab/PaperBanana.git
 cd PaperBanana
 ```
 
 ### Step2: Configuration
 PaperBanana supports configuring API keys from a YAML configuration file or via environment variables. 
 
-We recommend duplicate the `configs/model_config.template.yaml` file into `configs/model_config.yaml` to externalize all user configurations. This file is ignored by git to keep your api keys and configurations secret. In `model_config.yaml`, remember to fill in the two model names (`defaults.main_model_name` and `defaults.image_gen_model_name`) and set **at least one** API key under `api_keys`—for example only `google_api_key` (Gemini), or only `openrouter_api_key` (OpenRouter). **You do not need both; either one is enough.** If both are configured, OpenRouter is preferred for routing when available.
+We recommend duplicate the `configs/model_config.template.yaml` file into `configs/model_config.yaml` to externalize all user configurations. This file is ignored by git to keep your api keys and configurations secret. In `model_config.yaml`, remember to fill in the two model names (`defaults.main_model_name` and `defaults.image_gen_model_name`) and set **at least one** API key under `api_keys`—for example only `google_api_key` (Gemini), or only `openrouter_api_key` (OpenRouter). Select model profiles for the provider you configured. Routing is explicit: adding another API key never silently switches providers. Use an explicit OpenRouter profile for OpenRouter; direct Gemini profiles require Google credentials. See the registry and RFS guide for overrides.
 
 Note that if you need to generate many candidates simultaneously, you will require an API key that supports high concurrency.
 
@@ -95,7 +106,7 @@ You can also run the Gradio app locally:
 python app.py
 ```
 
-The Gradio **Figure Size** setting maps `1-3cm` and `4-6cm` to `1k`, `7-9cm` and `10-13cm` to `2k`, and `14-17cm` to `4k` for Gemini and OpenRouter image-generation calls. OpenAI `gpt-image` requests continue to use their existing fixed-size API path.
+The Gradio **Figure Size** setting maps `1-3cm` and `4-6cm` to `1k`, `7-9cm` and `10-13cm` to `2k`, and `14-17cm` to `4k` for Gemini and OpenRouter image-generation calls. The provider adapter validates/canonicalizes these legacy size hints against the selected model profile. Unsupported combinations fail explicitly rather than silently changing the figure geometry.
 
 #### Option 2: Interactive Demo (Streamlit)
 The easiest way to launch PaperBanana is via the interactive Streamlit demo:

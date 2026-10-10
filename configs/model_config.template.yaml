@@ -16,8 +16,22 @@
 
 # Default Models (must not be empty — used for all generation calls)
 defaults:
-  main_model_name: "gemini-3.1-pro-preview"
-  image_gen_model_name: "gemini-3.1-flash-image-preview"
+  main_model_name: "gemini-3.8-flash"
+  main_model_provider: "gemini"
+  image_gen_model_name: "gemini-nano-banana-2.1"
+  image_gen_provider: "gemini"
+  # Capability overrides belong under defaults so CLI/UI share one contract.
+  # Unknown model IDs require explicit endpoint, modalities and operations, or
+  # an explicit named base profile from configs/model_registry.yaml.
+  model_profiles: {}
+  # Example:
+  # model_profiles:
+  #   my-deployment:
+  #     base_profile: openai_image
+  #     provider: openai
+  #     endpoint: openai_images
+  #     model_id: my-deployment
+  #     image_size_mode: openai_flexible
   
 # API Keys. If you are using all gemini models, you can leave the other keys empty.
 api_keys:

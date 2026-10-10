@@ -6,3 +6,13 @@ __pycache__/
 .venv/
 data/
 results/
+output/
+outputs/
+checkpoints/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+!*.example

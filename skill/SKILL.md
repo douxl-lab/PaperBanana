@@ -1,102 +1,101 @@
 ---
 name: paperbanana
-description: Generate publication-quality academic diagrams from paper methodology text
-license: MIT-0
-dependencies:
-  env:
-    - OPENROUTER_API_KEY (recommended)
-    - GOOGLE_API_KEY (alternative)
-  runtime:
-    - python3
-    - uv
+description: Generate scientific diagrams and real-data plots with the five-agent PaperBanana pipeline, and export versioned RFS reconstruction bundles.
+license: Apache-2.0
 ---
 
-# PaperBanana
+# PaperBanana research-figure engine
 
-Generate publication-quality academic diagrams and pipeline figures from a paper's methodology section and figure caption. PaperBanana orchestrates a multi-agent pipeline (Retriever, Planner, Stylist, Visualizer, Critic) to produce camera-ready figures suitable for venues like NeurIPS, ICML, and ACL.
+Use this engine to design scientific figures from supplied method text or real
+quantitative data. Preserve the Retriever → Planner → Stylist → Visualizer →
+Critic architecture and the original Vanilla/Polish alternatives.
 
-## Environment Setup
+## Before generation
 
-```bash
-cd <repo-root>
-uv pip install -r requirements.txt
+1. Read the source material, desired figure purpose and any supplied FigureSpec.
+   Never invent experimental measurements or scientific relationships.
+2. Choose explicit text/image model profiles from `configs/model_registry.yaml`.
+   Check capability requirements (vision, structured text, generation or edit).
+   Account access is not guaranteed by the catalog. Do not guess a provider from
+   available keys or silently switch a paid provider.
+3. Configure credentials privately via environment or the git-ignored model
+   YAML. Never include credentials in prompts, artifacts or version control.
+4. Select reference retrieval only if required. `--retrieval-setting none` needs
+   no benchmark download. `--offline` disables dataset downloads, not model API
+   calls. Validate input and configuration before starting remote work.
+5. For plot-code execution, use only trusted input in a disposable environment.
+   A subprocess timeout is not a security sandbox. RFS CLI mode requires
+   `--allow-generated-plot-code`; see `SECURITY.md`.
+
+## Environment
+
+Python 3.12 is the tested runtime. From the repository root:
+
+```sh
+python -m pip install -r requirements.txt
+python skill/run.py --help
 ```
 
-Set your API key via environment variable or in `configs/model_config.yaml`.
+CLI options override environment values, then YAML, then registry defaults.
+For a new/unknown model use an explicit `model_profiles` capability declaration,
+not a name-based assumption. Model IDs and limits belong in the registry rather
+than this skill document.
 
-**Option 1 (Recommended): OpenRouter API key** — one key for both text reasoning and image generation:
-```bash
-export OPENROUTER_API_KEY="sk-or-v1-..."
-```
+## Generate RFS candidates
 
-**Option 2: Google API key** — direct access to Gemini API:
-```bash
-export GOOGLE_API_KEY="your-key-here"
-```
-
-If both keys are configured, OpenRouter is used by default.
-
-## Usage
-
-```bash
+```sh
 python skill/run.py \
-  --content "METHOD_TEXT" \
-  --caption "FIGURE_CAPTION" \
-  --task diagram \
-  --output output.png
+  --content-file method.txt --caption "Scientific architecture overview" \
+  --task diagram --render-mode rfs --retrieval-setting none \
+  --num-candidates 3 --max-concurrent 2 \
+  --output output/figure.png --rfs-output-dir output/rfs \
+  --checkpoint-dir output/checkpoints
 ```
 
-## Parameters
+Add `--rfs-file specification.json` to lock an existing FigureSpec while keeping
+its original source input. Schema and illustrative fixtures are in `rfs/`.
+Use `--render-mode legacy` for existing image-only contracts. Statistical plots
+use `--task plot` and actual supplied numeric content. Do not assume the image
+backend and the plotting-code backend support the same repair operations.
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `--content` | Yes* | | Method section text to visualize |
-| `--content-file` | Yes* | | Path to a file containing the method text (alternative to `--content`) |
-| `--caption` | Yes | | Figure caption or visual intent |
-| `--task` | No | `diagram` | Task type: `diagram` |
-| `--output` | No | `output.png` | Output image file path |
-| `--aspect-ratio` | No | `21:9` | Aspect ratio: `21:9`, `16:9`, or `3:2` |
-| `--max-critic-rounds` | No | `3` | Maximum critic refinement iterations |
-| `--num-candidates` | No | `10` | Number of parallel candidates to generate |
-| `--retrieval-setting` | No | `auto` | Retrieval mode: `auto`, `manual`, `random`, or `none` |
-| `--main-model-name` | No | `gemini-3.1-pro-preview` | Main model for VLM agents. Provider auto-detected from configured API key |
-| `--image-gen-model-name` | No | `gemini-3.1-flash-image-preview` | Model for image generation. Also supports `gemini-3-pro-image-preview` |
-| `--exp-mode` | No | `demo_full` | Pipeline: `demo_full` (with Stylist) or `demo_planner_critic` (without Stylist) |
+## Scientific and visual responsibilities
 
-*One of `--content` or `--content-file` is required.
+- FigureSpec records scientific entities, exact labels, directed edges, groups,
+  source evidence, data and protected constraints.
+- The image is the appearance reference; detailed design text explains the
+  composition and local decisions. None replaces source evidence.
+- Candidate variation changes presentation while preserving locked science.
+- Local image repair requires an actual reference and a model with edit support.
+  Do not silently substitute text-only regeneration. Protected pixels must still
+  be inspected; a prompt cannot guarantee pixel-identical preservation.
+- A malformed plan/review is a failure, not approval or “No changes needed.”
+- Model-proposed structure remains unverified. A valid schema or attractive image
+  does not prove scientific correctness.
 
-When `--num-candidates` > 1, output files are named `<stem>_0.png`, `<stem>_1.png`, etc.
+## Deliverables and recovery
 
-## Output
+Each RFS candidate has a versioned manifest and image, exact prompt, design
+instructions, FigureSpec and hashes. Preserve alpha/original bytes when possible.
+The selected prompt/spec must describe the selected image's actual stage.
+Keep failures explicit and keep valid prior artifacts without relabelling them
+as fully reviewed successes. Verify bundle hashes before reuse.
 
-The absolute path of each saved image is printed to stdout, one per line.
+Resume with the same source/configuration and `--resume --checkpoint-dir ...`.
+Only matching successful candidates are reused; failed candidates may incur new
+provider requests. API timeouts may have an unknown provider-side outcome.
+Never overwrite unrelated artifacts or assume arrival order is candidate order.
 
-## Examples
+The external RFS editable-reconstruction consumer is separate. This repository
+provides a public versioned exchange contract, not verified native PPTX/draw.io
+output. Consult `docs/RFS_GUIDE.md` and `rfs/README.md` for integration details.
 
-### Diagram
+## Verification
 
-```bash
-python skill/run.py \
-  --content "We propose a transformer-based encoder-decoder architecture. The encoder consists of 12 self-attention layers with residual connections. The decoder uses cross-attention to attend to encoder outputs and generates the target sequence autoregressively." \
-  --caption "Figure 1: Overview of the proposed transformer architecture" \
-  --task diagram \
-  --output architecture.png
+```sh
+python -m pip install -r requirements-dev.txt
+python -m pip check
+python -m pytest -q
 ```
 
-
-## Important Notes
-
-- **Runtime**: A single candidate typically takes 3-10 minutes depending on model and network conditions. With the default 10 candidates running in parallel, expect ~10-30 minutes total. Plan accordingly.
-- **API calls**: Each candidate involves multiple LLM calls (Retriever + Planner + Stylist + Visualizer + up to 3 Critic rounds). Candidates run in parallel for efficiency.
-- **Image generation**: The Visualizer agent calls an image generation model (Gemini Image) to render diagrams.
-
-## About
-
-PaperBanana is based on the **PaperVizAgent** framework, a reference-driven multi-agent system for automated academic illustration. It was developed as part of the research paper:
-
-> **PaperBanana: Automating Academic Illustration for AI Scientists**
-> Dawei Zhu, Rui Meng, Yale Song, Xiyu Wei, Sujian Li, Tomas Pfister, Jinsung Yoon
-> arXiv:2601.23265
-
-The framework introduces a collaborative team of five specialized agents — Retriever, Planner, Stylist, Visualizer, and Critic — to transform raw scientific content into publication-quality diagrams. Evaluation is conducted on the **PaperBananaBench** benchmark.
-
+Controlled-transport tests validate software behavior. Do not describe them as
+live provider generation, scientific-result validation or external consumer QA.

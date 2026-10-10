@@ -24,6 +24,8 @@ from PIL import Image
 
 from utils import generation_utils
 from .base_agent import BaseAgent
+from rfs.contract import is_rfs_enabled, validate_relative_path, RFSValidationError
+from rfs.agent_contract import STRUCTURED_SYSTEM_SUPPLEMENT, planner_instructions, apply_planner_response
 
 
 class PlannerAgent(BaseAgent):
@@ -74,13 +76,42 @@ class PlannerAgent(BaseAgent):
         if not examples:
             retrieved_ids = data.get("top10_references", [])
             if retrieved_ids:
-                with open(self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json", "r", encoding="utf-8") as f:
-                    candidate_pool = json.load(f)
-                id_to_item = {item["id"]: item for item in candidate_pool}
-                examples = [id_to_item[ref_id] for ref_id in retrieved_ids if ref_id in id_to_item]
+                try:
+                    with open(self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json", "r", encoding="utf-8") as f:
+                        candidate_pool = json.load(f)
+                    if not isinstance(candidate_pool, list):
+                        raise ValueError("Reference metadata must be a list")
+                    id_to_item = {item["id"]: item for item in candidate_pool
+                                  if isinstance(item, dict) and isinstance(item.get("id"), (str, int))}
+                    examples = [id_to_item[ref_id] for ref_id in retrieved_ids
+                                if isinstance(ref_id, (str, int)) and ref_id in id_to_item]
+                except (OSError, ValueError, TypeError) as exc:
+                    data.setdefault("omitted_references", []).append({"reason": type(exc).__name__, "stage": "reference_metadata"})
         
         user_prompt = ""
+        used_reference_chars = 0
         for idx, item in enumerate(examples):
+            # Reference entries are external data, never arbitrary filesystem authority.
+            try:
+                relative_path = validate_relative_path(item["path_to_gt_image"])
+                reference_root = (self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}").resolve()
+                image_path = (reference_root / relative_path).resolve()
+                if not image_path.is_relative_to(reference_root):
+                    raise RFSValidationError("Reference path escapes the reference dataset")
+                if image_path.stat().st_size > 16 * 1024 * 1024:
+                    raise RFSValidationError("Reference image exceeds 16 MB budget")
+                with image_path.open("rb") as f:
+                    ref_image_base64 = base64.b64encode(f.read()).decode("utf-8")
+                item_content = item["content"]
+                item_intent = item["visual_intent"]
+                reference_chars = len(str(item_content)) + len(str(item_intent))
+                budget = getattr(self.exp_config, "reference_prompt_budget_chars", 100_000)
+                if used_reference_chars + reference_chars > budget:
+                    raise RFSValidationError("Reference text prompt budget exceeded")
+                used_reference_chars += reference_chars
+            except (KeyError, TypeError, OSError, RFSValidationError) as exc:
+                data.setdefault("omitted_references", []).append({"index": idx, "reason": type(exc).__name__})
+                continue
             user_prompt += f"Example {idx+1}:\n"
             
             item_content = item["content"]
@@ -88,13 +119,9 @@ class PlannerAgent(BaseAgent):
                 item_content = json.dumps(item_content)
             
             user_prompt += f"{cfg['content_label']}: {item_content}\n"
-            user_prompt += f"{cfg['visual_intent_label']}: {item['visual_intent']}\nReference {cfg['task_name'].capitalize()}: "
+            user_prompt += f"{cfg['visual_intent_label']}: {item_intent}\nReference {cfg['task_name'].capitalize()}: "
             content_list.append({"type": "text", "text": user_prompt})
             
-            # Resolve relative path using work_dir
-            image_path = self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}" / item["path_to_gt_image"]
-            with open(image_path, "rb") as f:
-                ref_image_base64 = base64.b64encode(f.read()).decode("utf-8")
             content_list.append({"type": "image", "image_base64": ref_image_base64})
             user_prompt = ""
 
@@ -105,23 +132,38 @@ class PlannerAgent(BaseAgent):
             user_prompt += " (do not include figure titles)"
         user_prompt += ":"
 
+        rfs_mode = is_rfs_enabled(data, self.exp_config)
+        locked_spec = None
+        if rfs_mode:
+            rfs_instructions, locked_spec = planner_instructions(data, task_name=cfg["task_name"])
+            user_prompt += "\n" + rfs_instructions
         content_list.append({"type": "text", "text": user_prompt})
 
         response_list = await generation_utils.call_model_with_retry_async(
             model_name=self.model_name,
             contents=content_list,
             config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
+                system_instruction=self.system_prompt + (STRUCTURED_SYSTEM_SUPPLEMENT if rfs_mode else ""),
                 temperature=self.exp_config.temperature,
                 candidate_count=1,
                 max_output_tokens=50000,
             ),
             max_attempts=5,
             retry_delay=5,
+            provider=getattr(self.exp_config, "main_model_provider", None) or None,
+            overrides=getattr(self.exp_config, "model_profiles", None),
+            timeout=getattr(self.exp_config, "candidate_timeout_seconds", 600),
+            total_timeout=getattr(self.exp_config, "candidate_timeout_seconds", 600),
         )
         
-        for idx, response in enumerate(response_list):
-            data[f"target_{cfg['task_name']}_desc{idx}"] = response.strip()
+        if rfs_mode:
+            if not response_list:
+                raise RFSValidationError("Planner returned no structured response")
+            for idx, response in enumerate(response_list):
+                apply_planner_response(data, response, locked_spec=locked_spec, desc_key=f"target_{cfg['task_name']}_desc{idx}")
+        else:
+            for idx, response in enumerate(response_list):
+                data[f"target_{cfg['task_name']}_desc{idx}"] = response.strip()
 
         return data
 
