@@ -1,5 +1,8 @@
 # Canonical generation boundary
 
+When generating a standalone figure, enforce the **scientific mechanism, not infographic** default: no internal title, step numbers, unsolicited panel letters or large decorative regions. The RFS style reference defines the reusable rule, but the verified FigureSpec and explicit journal instructions outrank aesthetics. Do not silently promote multiclass Dirichlet/argmax equations to independent multi-label prediction: only draw the model's documented probability and uncertainty head.
+
+
 Use the installed engine checkout, not the copied Skill folder, to execute Python. `requirements-exchange.txt` is enough for pure protocol validation; actual generation requires full requirements and privately configured provider credentials.
 
 ```bash

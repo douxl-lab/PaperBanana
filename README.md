@@ -2,6 +2,10 @@
 
 [Original PaperBanana](https://github.com/dwzhu-pku/PaperBanana) / PaperVizAgent 的增强 Fork。保留 **Retriever → Planner → Stylist → Visualizer → Critic** 五智能体，以及原有 Vanilla、Polish、统计绘图和界面入口；新增与 [Research Figure Studio](https://github.com/douxl-lab/research-figure-skill) 的版本化互通接口。
 
+## 科研图默认版式
+
+与 RFS 的 [真实论文机制图规范](https://github.com/douxl-lab/research-figure-skill/blob/main/research-figure/references/journal-mechanism-style.md) 对齐：**独立图的标题和图号置于论文图注，图片内部不加 1–6 阶段编号或 A/B/C 面板字母，不堆叠彩色卡片和装饰性横幅**。需要详细解释的总体架构、路由机制与证据融合，默认分别绘制，按完整 FigureSpec 传递；仅在用户或期刊明确要求组合子图时使用 panel letters。所有计算符号必须有代码或公式依据，尤其不得套用未经验证的多类 Dirichlet 公式解释多标签预测。
+
 ## 新版：统一 FigureSpec v1
 
 两端直接使用同一份 `schema_version: 1.0.0` 科学规范。模块、方向与类型明确的连接、分组、标签、公式、完整原始数据、来源和不可变约束不会在接口处缩减成提示词摘要。科学指纹保护这些字段；仅 `design` 允许在约束内优化。
