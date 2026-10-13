@@ -1,11 +1,11 @@
 ---
 name: paperbanana
 description: >-
-  Generate scientific method, architecture and overview diagrams with PaperBanana's five-agent engine; export full FigureSpec v1, actual image, exact prompt and written design for RFS reconstruction. Use when PaperBanana is explicitly requested or the research-figure orchestrator delegates generation. Do not use to recreate an approved figure as native PPTX, to invent experimental measurements, or to repeat a completed generative design stage.
+  Generate scientific method, architecture and overview diagrams with PaperBanana's five-agent engine; export full FigureSpec v1, actual image, exact prompt and written design for RFS reconstruction or TikZ reference handoff. Use when PaperBanana is explicitly requested or the research-figure orchestrator delegates generation. Do not use to recreate an approved figure as native PPTX, to invent experimental measurements, or to repeat a completed generative design stage.
 license: Apache-2.0
 compatibility: Installed PaperBanana checkout and configured model provider for generation; Python 3.10+ plus jsonschema and Pillow for offline exchange. Full generation is tested on Python 3.12.
 metadata:
-  version: "0.4.0"
+  version: "0.4.1"
   category: "scientific-figure-engine"
 ---
 
@@ -33,6 +33,10 @@ Use `PAPERBANANA_ROOT` or an explicitly supplied trusted engine checkout. The in
 Use professional scientific prompts covering complete science, visual hierarchy, composition/regions, exact typography, connector lanes, and specific forbidden changes. Image model capabilities and current API parameters require actual provider verification. Local editing requires a real reference and supported editing operation; do not silently regenerate the whole composition. Preserve every non-target entity and inspect the actual edited output.
 
 Detailed design text describes intended composition. It is not evidence that the generated image exactly followed the plan. After selection, RFS must inspect that specific image and write image-bound observed reconstruction notes. Only then can an available native builder perform faithful reconstruction.
+
+## Optional RFS TikZ reference handoff
+
+PaperBanana does not render TeX. For a successful, verified candidate, use skill/exchange.py vector-handoff with --spec, --bundle and --out to preserve the reference PNG, detailed design and immutable FigureSpec v1. RFS owns the explicit local --engine tikz vector renderer. The handoff is offline and must not be described as pixel-identical reconstruction or editable PPTX.
 
 ## Numeric data, legacy mode and evidence
 

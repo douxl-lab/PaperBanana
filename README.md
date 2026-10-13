@@ -46,6 +46,21 @@ python skill/exchange.py verify-bundle --spec /project/new-request/figure-spec.j
 
 配对入口仅处理方法示意图；真实数值图由 RFS 的固定数据绘图路径处理。完整命令和恢复边界见 [Skill 运行参考](skills/paperbanana/references/exchange.md)。
 
+## 与 RFS 的 TikZ 精密矢量路线适配
+
+新增离线 `vector-handoff`：验证 PaperBanana 已生成候选图的文件哈希和科学指纹，向新目录导出原始 PNG、设计说明和完整、未篡改的 FigureSpec v1，供 RFS 选择 TikZ 本地矢量编译。PaperBanana 保留原有五智能体，不重复实现 TeX 编译；双方的 schema 和 validator 不变。
+
+~~~bash
+python skill/exchange.py vector-handoff --spec /project/F01.json \
+  --bundle /project/request/generated/bundles/CANDIDATE \
+  --out /project/vector-reference
+python /PATH/research-figure/scripts/rfs.py run \
+  --spec /project/vector-reference/figure-spec.json \
+  --engine tikz --out /project/F01-tikz
+~~~
+
+交接命令**不调用外部模型，也不生成 TeX/PPTX**。RFS 独立生成 `.tex`、矢量 PDF/SVG 和 PNG；输出不会自动与 PaperBanana 位图实现像素级一致，仍须审核科研语义和实际版式。详见 [RFS TikZ 工作流](https://github.com/douxl-lab/research-figure-skill/blob/main/research-figure/references/tikz-workflow.md)。
+
 ## 独立生成及旧入口
 
 ```bash

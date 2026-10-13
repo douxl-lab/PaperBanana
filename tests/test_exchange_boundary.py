@@ -123,6 +123,25 @@ class ExchangeBoundaryTests(unittest.TestCase):
         status, result = self.invoke(["verify-bundle", "--spec", str(self.path), "--bundle", str(bundle)])
         self.assertEqual(status, 0)
         self.assertEqual(result["scientific_review"], "PENDING")
+        handoff_dir = self.root / "vector-handoff"
+        code, handoff = self.invoke(["vector-handoff", "--spec", str(self.path),
+                                     "--bundle", str(bundle), "--out", str(handoff_dir)])
+        self.assertEqual(code, 0)
+        self.assertEqual(handoff["status"], "REFERENCE_VERIFIED_NOT_VECTOR_RENDERED")
+        self.assertEqual((handoff_dir / "reference.png").read_bytes(), raw)
+        self.assertEqual(load_spec(handoff_dir / "figure-spec.json"), self.spec)
+        self.assertIn("Two boxes", (handoff_dir / "design.md").read_text())
+        self.assertFalse((handoff_dir / "figure.tex").exists())
+        self.assertEqual(json.loads((handoff_dir / "manifest.json").read_text())["scientific_fingerprint"],
+                         scientific_fingerprint(self.spec))
+        code, _ = self.invoke(["vector-handoff", "--spec", str(self.path),
+                               "--bundle", str(bundle), "--out", str(handoff_dir)])
+        self.assertEqual(code, 2)  # Never overwrite a previously delivered reference.
+        (bundle / "design.md").write_text("tampered", encoding="utf-8")
+        code, _ = self.invoke(["vector-handoff", "--spec", str(self.path),
+                               "--bundle", str(bundle), "--out", str(self.root / "reject")])
+        self.assertEqual(code, 2)
+        self.assertFalse((self.root / "reject").exists())
 
     def test_request_source_tamper_is_rejected(self):
         path = prepare_request(self.path, self.root / "request")
