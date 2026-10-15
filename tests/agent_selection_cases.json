@@ -1,0 +1,102 @@
+{
+  "corpus_version": "0.5.0",
+  "notice": "Human-assigned routing cases. Not actual host LLM skill-invocation observations.",
+  "cases": [
+    {
+      "id": "P01",
+      "lang": "zh",
+      "prompt": "使用 $paperbanana 的五智能体帮我根据 FigureSpec 生成方法架构图",
+      "intended_skill": "paperbanana"
+    },
+    {
+      "id": "P02",
+      "lang": "en",
+      "prompt": "Use $paperbanana for this source-grounded scientific overview only",
+      "intended_skill": "paperbanana"
+    },
+    {
+      "id": "P03",
+      "lang": "en",
+      "prompt": "Run my authorized PaperBanana canonical exchange request and return candidate bundles",
+      "intended_skill": "paperbanana"
+    },
+    {
+      "id": "P04",
+      "lang": "zh",
+      "prompt": "PaperBanana，请验证这个已经生成的候选图 Bundle 的哈希和科学指纹",
+      "intended_skill": "paperbanana"
+    },
+    {
+      "id": "P05",
+      "lang": "en",
+      "prompt": "With the PaperBanana engine only, export its successful candidate as a TikZ design reference",
+      "intended_skill": "paperbanana"
+    },
+    {
+      "id": "P06",
+      "lang": "zh",
+      "prompt": "只调用 PaperBanana，不需要 Research Figure Skill 额外绘制或审查",
+      "intended_skill": "paperbanana"
+    },
+    {
+      "id": "N01",
+      "lang": "zh",
+      "prompt": "帮我制作论文中的真实消融结果柱状图",
+      "intended_skill": "research-figure"
+    },
+    {
+      "id": "N02",
+      "lang": "en",
+      "prompt": "Create a publication-ready chart from actual experimental CSV data",
+      "intended_skill": "research-figure"
+    },
+    {
+      "id": "N03",
+      "lang": "zh",
+      "prompt": "论文方法图需要 TikZ 的源码和 PDF，请不要使用生图模型",
+      "intended_skill": "research-figure"
+    },
+    {
+      "id": "N04",
+      "lang": "en",
+      "prompt": "Audit the editability of a research PPTX, no image generation",
+      "intended_skill": "research-figure"
+    },
+    {
+      "id": "N05",
+      "lang": "zh",
+      "prompt": "我要对科研图件进行统一方案规划和多后端选择",
+      "intended_skill": "research-figure"
+    },
+    {
+      "id": "N06",
+      "lang": "en",
+      "prompt": "Review this candidate's scientific arrows against my code",
+      "intended_skill": "research-figure"
+    },
+    {
+      "id": "N07",
+      "lang": "en",
+      "prompt": "Create a generic PowerPoint presentation for a quarterly business meeting",
+      "intended_skill": "none"
+    },
+    {
+      "id": "N08",
+      "lang": "zh",
+      "prompt": "只是讨论一下 PaperBanana 实现原理，不用实际绘图",
+      "intended_skill": "none"
+    },
+    {
+      "id": "N09",
+      "lang": "en",
+      "prompt": "Illustrate a social media holiday greeting card",
+      "intended_skill": "none"
+    },
+    {
+      "id": "N10",
+      "lang": "zh",
+      "prompt": "帮我写方法章节中的数学公式，不要画图",
+      "intended_skill": "none"
+    }
+  ]
+}

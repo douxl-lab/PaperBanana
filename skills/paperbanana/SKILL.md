@@ -1,45 +1,49 @@
 ---
 name: paperbanana
 description: >-
-  Generate scientific method, architecture and overview diagrams with PaperBanana's five-agent engine; export full FigureSpec v1, actual image, exact prompt and written design for RFS reconstruction or TikZ reference handoff. Use when PaperBanana is explicitly requested or the research-figure orchestrator delegates generation. Do not use to recreate an approved figure as native PPTX, to invent experimental measurements, or to repeat a completed generative design stage.
+  Generate scientific paper method, mechanism or architecture diagrams with PaperBanana's Retriever/Planner/Stylist/Visualizer/Critic engine. Use when the user explicitly asks for PaperBanana or a research-figure orchestrator delegates image generation to this installed engine. Preserve exact FigureSpec v1 science, candidate images, submitted prompts and written design for RFS handoff. Do not use as the general scientific-figure router, a real-data plotter, an independent TikZ compiler, a generic presentation designer, or a native editable-PPTX reconstruction backend.
 license: Apache-2.0
-compatibility: Installed PaperBanana checkout and configured model provider for generation; Python 3.10+ plus jsonschema and Pillow for offline exchange. Full generation is tested on Python 3.12.
+compatibility: Installed PaperBanana engine checkout and configured, authorized provider for live generation; Python 3.10+ with jsonschema/Pillow for offline exchange; full generation tested on Python 3.12.
 metadata:
-  version: "0.4.1"
+  version: "0.5.0"
   category: "scientific-figure-engine"
 ---
 
-# PaperBanana engine
+# PaperBanana — delegated scientific image generator
 
-Preserve Retriever → Planner → Stylist → Visualizer → Critic. Do not add another outer agent loop with the same responsibilities. This engine produces scientific visual references and detailed written design, not native editable slides.
+Use PaperBanana **only** when explicitly requested or delegated by RFS. Keep the five-agent Retriever → Planner → Stylist → Visualizer → Critic workflow; do not create a competing outer planning/critic loop. Scientific routing, real-data Matplotlib plots, local TikZ compilation, publication-quality acceptance and native editable reconstruction belong to RFS or their respective installed specialist backends.
 
-## Resolve runtime and scope
+## Resolve inputs and permissions
 
-Use `PAPERBANANA_ROOT` or an explicitly supplied trusted engine checkout. The installed Skill folder is not the Python runtime. Existing command entrypoints remain `skill/run.py` and `skill/exchange.py` relative to that checkout. Read the root README and `skills/paperbanana/references/exchange.md` there for complete usage.
+- Run from the separately installed engine checkout; set `PAPERBANANA_ROOT` to its directory. The installed `skills/paperbanana` folder is an invocation manifest, **not** an independent runtime. Existing entrypoints live at `skill/run.py` and `skill/exchange.py`.
+- Read the scientific source or canonical FigureSpec v1. Preserve the caller's modules, labels, formulas, edge endpoints/direction, groups, evidence, data and locked constraints; only permitted visual `design` fields may vary.
+- Do not send unpublished materials or invoke a paid provider without explicit authorization for this task/service and possible cost. An installed key or existing model profile does not establish permission or availability.
+- Read [exchange instructions](references/exchange.md) for request and bundle formats; if no compatible engine/model is available, report the blocker instead of pretending to have produced an image.
 
-## Paired RFS request
+## Paired RFS workflow
 
-1. Read actual source material and canonical FigureSpec. Never generate measurements or alter supplied topology, formulas, labels, groups, data, evidence or verification status.
-2. Run `python "$PAPERBANANA_ROOT/skill/exchange.py" describe`; let the consumer compare the protocol/version/schema/validator fingerprint. Never bypass a mismatch by converting the spec to plain prose.
-3. Validate the entire bound request using `validate-request --request /project/request.json`. Request preparation and validation must not call a provider.
-4. Only with authorization for the current material and potential fees, call `run --request /project/request.json --allow-external`. Select explicit configured model profiles; do not guess from model names or key availability. Never switch paid providers silently. Do not log/publish credentials or unpublished sources.
-5. Preserve images, exact selected-stage prompts, detailed design and full FigureSpec in the versioned manifest. A failed review is not a success; prior valid images may be retained with failure status. Use a fresh request/output directory.
-6. Return the actual bundle locations and explicit status to RFS. The consumer validates its original scientific fingerprint and all artifact bytes. Do not fabricate a consumer acceptance, blind review or native-editability result.
+1. Run `python "$PAPERBANANA_ROOT/skill/exchange.py" describe`; have RFS verify the schema/validator/manifest descriptor before transmission. Never soften a mismatch by dropping the contract and sending a prose summary.
+2. Validate the canonical request with `validate-request --request <request.json>` locally. Reject missing sources or changed scientific hashes.
+3. Only with permission, run `run --request <request.json> --allow-external`. The wrapper delegates to the five-agent pipeline and creates actual candidates; do not separately run the same generation job.
+4. Preserve each candidate's actual image bytes, exact submitted prompt, design description and full FigureSpec, and record review/failure states honestly. For an approved reference, RFS owns image-anchored notes and the native reconstruction handoff.
+5. Use `verify-bundle --spec <original.json> --bundle <candidate>` before making a claim about byte/source integrity. Even a valid bundle leaves scientific correctness, visual fidelity and native editability to a separate review.
 
-**Default art direction for standalone academic figures:** no large figure title/subtitle, decorative stage-number boxes, (a)/(b)/(c) subfigure letters, contribution banners or poster-like surrounding whitespace *inside the image*. Keep precise module names, query/key/value operations, branch weights, tensor dimensions and evidence paths only if grounded in the caller's FigureSpec. When a detailed overall framework and two mechanism figures are required, render them as **three independent outputs** with separate specs and manuscript captions, not a single stitched poster. The target venue's explicit multipanel rules override this standalone default. Follow RFS's [journal mechanism style reference](https://github.com/douxl-lab/research-figure-skill/blob/main/research-figure/references/journal-mechanism-style.md).
+~~~bash
+python "$PAPERBANANA_ROOT/skill/exchange.py" describe
+python "$PAPERBANANA_ROOT/skill/exchange.py" validate-request --request /project/request.json
+python "$PAPERBANANA_ROOT/skill/exchange.py" run --request /project/request.json --allow-external
+python "$PAPERBANANA_ROOT/skill/exchange.py" verify-bundle --spec /project/figure-spec.json --bundle /project/candidate
+~~~
 
-## Design quality and repair
+## Figure style and optional vector reference
 
-Use professional scientific prompts covering complete science, visual hierarchy, composition/regions, exact typography, connector lanes, and specific forbidden changes. Image model capabilities and current API parameters require actual provider verification. Local editing requires a real reference and supported editing operation; do not silently regenerate the whole composition. Preserve every non-target entity and inspect the actual edited output.
+Default standalone academic art direction: **no large figure title** or internal subtitle, unsolicited panel letters, decorative stage numbers or oversized banners. Prefer **three independent outputs** with separate captions when a complete overview and two mechanisms all need space; actual venue/panel requirements and scientific source outrank this default. Keep tensor dimensions, Q/K/V, uncertainty equations and branch weights only when justified by the supplied FigureSpec. See [journal-mechanism-style.md](https://github.com/douxl-lab/research-figure-skill/blob/main/research-figure/references/journal-mechanism-style.md).
 
-Detailed design text describes intended composition. It is not evidence that the generated image exactly followed the plan. After selection, RFS must inspect that specific image and write image-bound observed reconstruction notes. Only then can an available native builder perform faithful reconstruction.
+PaperBanana does **not** render TeX. The offline `vector-handoff` command checks a successful candidate's full scientific fingerprint and file hashes, then copies its image, design notes and FigureSpec v1 into a fresh directory as visual reference for an explicit RFS `--engine tikz` run. This does not produce a vector drawing or guarantee pixel-exact reconstruction.
 
-## Optional RFS TikZ reference handoff
+~~~bash
+python "$PAPERBANANA_ROOT/skill/exchange.py" vector-handoff \
+  --spec /project/figure-spec.json --bundle /project/candidate --out /project/vector-reference
+~~~
 
-PaperBanana does not render TeX. For a successful, verified candidate, use skill/exchange.py vector-handoff with --spec, --bundle and --out to preserve the reference PNG, detailed design and immutable FigureSpec v1. RFS owns the explicit local --engine tikz vector renderer. The handoff is offline and must not be described as pixel-identical reconstruction or editable PPTX.
-
-## Numeric data, legacy mode and evidence
-
-The paired canonical endpoint accepts diagrams only. Quantitative/hybrid data panels are routed to deterministic source-data plotting by RFS. Standalone legacy plotting remains available but executes generated Python; subprocess/timeouts are not a sandbox. Use only trusted isolated single-user execution and the required explicit opt-in. Reference download `--offline` is not offline image generation.
-
-Report software integrity, scientific validity, visual fidelity, actual model execution and native reconstruction separately. Protocol tests use synthetic fixtures and do not certify model image quality. Keep private internal notes and generated artifacts outside the public source tree.
+Do not interpret synthetic fixtures as real scientific results, prompt-only output as generated art, or flattened PNGs as editable PowerPoint objects. No unverified multiclass Dirichlet formula may be repurposed as a multi-label uncertainty model. Keep credentials, unpublished source datasets, internal records and generated artifacts out of the public repository.

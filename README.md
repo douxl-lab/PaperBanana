@@ -12,6 +12,18 @@
 
 `skill/exchange.py` 提供离线协议描述、请求校验、授权生成和产物校验。RFS 在调用前核对协议指纹，生成后将 **图片 + 同一 FigureSpec + 详细文字设计说明** 交接给原生重建后端。本仓库不直接生成可编辑 PPTX，也不声称脚本成功就证明图片科学正确。
 
+## Agent Skills 匹配边界
+
+正式安装入口为 `skills/paperbanana/SKILL.md`，遵循 Agent Skills 标准的 `name: paperbanana` 及 `description` 发现规则；`skill/SKILL.md` 是为旧集成保留的内容镜像，**不是**应单独安装或运行官方校验的 Skill 目录（其父目录不叫 `paperbanana`）。
+
+PaperBanana 专用于被用户明确选择或由 Research Figure Skill 委派的五智能体科研方法图生成和候选图交换；一般论文绘图、真实数值图、精确 TikZ 源图、科研图科学验收由 RFS 统筹。保留现有 UI 隐式匹配策略，不把元数据范围控制误认为权限授权。新增 [匹配回归样例](tests/agent_selection_cases.json) 区分直接生成、RFS 绘图和无图任务；这些是人工预期标签而非实测模型触发率。
+
+~~~bash
+# 标准检查（安装官方 Agent Skills 参考工具后）
+skills-ref validate skills/paperbanana
+python -m pytest -q tests/test_agent_selection_contract.py
+~~~
+
 ## 安装
 
 完整生成环境使用 Python 3.12；账号模型、额度和网络需自行配置。

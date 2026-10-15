@@ -1,6 +1,6 @@
 interface:
   display_name: "PaperBanana RFS Engine"
-  short_description: "Scientific diagrams with canonical RFS exchange"
-  default_prompt: "Use $paperbanana to generate a scientifically grounded diagram and preserve its complete RFS exchange bundle."
+  short_description: "Five-agent scientific diagram generation and RFS handoff"
+  default_prompt: "Use $paperbanana to generate a scientific method diagram from a verified FigureSpec with an authorized model, retaining the candidate, exact prompt and design handoff."
 policy:
   allow_implicit_invocation: true
