@@ -85,3 +85,19 @@ _peer/
 /status.md
 # README, LICENSE, SECURITY, skill instructions, runtime references/style guides
 # and existing upstream illustrative assets remain public source dependencies.
+
+# Native host jobs and local source material (never commit live receipts)
+jobs/
+native_runtime/
+native-jobs/
+artifacts/
+deliverables/
+attachments/
+manuscripts/
+research/
+*.receipt.json
+*.output.json
+context.json
+repair.json
+request.json
+prompt.txt

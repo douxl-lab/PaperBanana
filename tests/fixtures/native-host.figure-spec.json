@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0.0",
+  "figure_id": "synthetic-fixture",
+  "kind": "diagram",
+  "nodes": [
+    {
+      "id": "input",
+      "label": "Input",
+      "kind": "synthetic",
+      "evidence": [
+        {
+          "source_id": "fixture",
+          "quote": "Synthetic test fixture only: Input flows into Output."
+        }
+      ]
+    },
+    {
+      "id": "output",
+      "label": "Output",
+      "kind": "synthetic",
+      "evidence": [
+        {
+          "source_id": "fixture",
+          "quote": "Synthetic test fixture only: Input flows into Output."
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "flow",
+      "source": "input",
+      "target": "output",
+      "kind": "data_flow",
+      "evidence": [
+        {
+          "source_id": "fixture",
+          "quote": "Synthetic test fixture only: Input flows into Output."
+        }
+      ],
+      "directed": true
+    }
+  ],
+  "groups": [],
+  "labels": [],
+  "datasets": [],
+  "sources": [
+    {
+      "id": "fixture",
+      "kind": "user_text",
+      "content": "Synthetic test fixture only: Input flows into Output.",
+      "sha256": "218739aeb17f5e41ef5b3699d968b3203cd970e017424aed4622fc32edfeadbd"
+    }
+  ],
+  "constraints": {
+    "locked": true,
+    "required_labels": [
+      "Input",
+      "Output"
+    ],
+    "layout": [],
+    "visual": [],
+    "negative": []
+  },
+  "design": {
+    "layout": "left to right",
+    "composition": "Synthetic two-node fixture",
+    "palette": [
+      "#000000"
+    ],
+    "typography": "sans-serif",
+    "candidate_variation": ""
+  },
+  "provenance": {
+    "origin": "user_supplied",
+    "scientific_verification": "unverified",
+    "external_consumer_verified": false
+  }
+}

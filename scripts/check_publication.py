@@ -11,7 +11,8 @@ from pathlib import Path
 
 PRIVATE = {"docs", "internal", "private", "notes", "reports", "reviews", "plans", "drafts", "work",
            "data", "datasets", "results", "output", "outputs", "checkpoints", "logs", "_peer",
-           ".vscode", ".idea", ".cursor", ".claude", ".codex", ".agents", ".venv", "__pycache__"}
+           "jobs", "native_runtime", "native-jobs", "artifacts", "deliverables", "attachments",
+           "manuscripts", "research", ".vscode", ".idea", ".cursor", ".claude", ".codex", ".agents", ".venv", "__pycache__"}
 ROOT_DOCS = {"README.md", "SECURITY.md", "CONTRIBUTING.md", "code-of-conduct.md"}
 SECRET = [re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
           re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}\b"),
@@ -24,6 +25,8 @@ def check_path(name):
     if any(p.lower() in PRIVATE for p in path.parts):
         return False
     if path.name.startswith(".env") or path.suffix.lower() in {".key", ".pem", ".p12", ".pfx"}:
+        return False
+    if path.name in {"context.json", "repair.json", "request.json", "prompt.txt"} or path.name.endswith((".receipt.json", ".output.json")):
         return False
     if name == "configs/model_config.yaml" or re.search(r"(?i)(credentials|service[-_]account)", path.name):
         return False

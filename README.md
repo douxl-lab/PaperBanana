@@ -2,6 +2,13 @@
 
 [Original PaperBanana](https://github.com/dwzhu-pku/PaperBanana) / PaperVizAgent 的增强 Fork。保留 **Retriever → Planner → Stylist → Visualizer → Critic** 五智能体，以及原有 Vanilla、Polish、统计绘图和界面入口；新增与 [Research Figure Studio](https://github.com/douxl-lab/research-figure-skill) 的版本化互通接口。
 
+## 两种执行方式
+
+- **宿主内置生图**：新增 `skill/native_host.py`，使用当前宿主已有的推理、视觉和内置生图能力，不读取或配置外部 API 密钥。适配器只管理五阶段顺序、科学指纹、真实图片与提示词哈希及有界修复，宿主必须实际执行各阶段。
+- **Provider 引擎**：继续使用原有 `skill/run.py`、`skill/exchange.py`、CLI 和 UI；需要对应服务的配置和授权，不会被新适配器替换。
+
+两种模式都不能把离线校验当作真实生成。宿主阶段回执不是平台签名，图片验收也不证明科研结论。
+
 ## 科研图默认版式
 
 与 RFS 的 [真实论文机制图规范](https://github.com/douxl-lab/research-figure-skill/blob/main/research-figure/references/journal-mechanism-style.md) 对齐：**独立图的标题和图号置于论文图注，图片内部不加 1–6 阶段编号或 A/B/C 面板字母，不堆叠彩色卡片和装饰性横幅**。需要详细解释的总体架构、路由机制与证据融合，默认分别绘制，按完整 FigureSpec 传递；仅在用户或期刊明确要求组合子图时使用 panel letters。所有计算符号必须有代码或公式依据，尤其不得套用未经验证的多类 Dirichlet 公式解释多标签预测。
@@ -43,6 +50,16 @@ python skill/exchange.py describe
 ```
 
 模型能力来自 `configs/model_registry.yaml`。将模板复制到忽略的 `configs/model_config.yaml` 或使用所选 provider 的环境变量；密钥不得进入 FigureSpec、Prompt、仓库、日志或输出包。文档记录的模型不保证你的账号可用。配置优先级为显式 CLI → 环境变量 → YAML → 注册表默认；不因另一个 key 存在而静默切换服务。
+
+## 宿主内置生图快速开始
+
+```bash
+python -m pip install -r requirements-exchange.txt
+python skill/native_host.py prepare --spec /project/figure-spec.json --job /project/native-job
+python skill/native_host.py next --job /project/native-job
+```
+
+按返回任务依次执行 Retriever、Planner、Stylist、Visualizer、Critic，并用 `record` 登记真实输出。Visualizer 必须调用宿主内置生图工具；Critic 必须检查实际图像。`verify` 复核阶段链和文件绑定，`repair` 从需要修改的完整任务建立新的有界修复任务，不覆盖原图。完整字段、命令与限制见 [Native host 运行参考](skills/paperbanana/references/native-host.md)。不得使用 `python -O`。
 
 ## 与 RFS 配对使用
 
@@ -89,6 +106,15 @@ streamlit run demo.py
 成功候选包含 `manifest.json`、`image.png`、`prompt.txt`、`design.md` 和 `figure_spec.json`，可能另有原图、system prompt、原始输入规范及绘图代码。PNG 保留原始字节/透明度；失败候选可保留上一张有效图片，但状态仍为失败。
 
 消费端同时检查文件哈希、实际 MIME 和原始科学指纹。哈希不是签名或科学真实性证明。`design.md` 是生成模型设计说明；后续必须观察实际图片，写出绑定图片与规范指纹的重建笔记，再由 paper-fig / Sivia / draw.io 执行。需分别核验原生对象与实际导出的渲染。
+
+## 目录结构
+
+- `agents/`、`utils/`：现有五智能体、模型适配及生成工具。
+- `rfs/`：FigureSpec、请求与产物校验协议。
+- `skill/`：Provider、交换协议与 native host 的可执行入口。
+- `skills/paperbanana/`：标准 Skill 安装入口及必要运行参考。
+- `tests/`：离线回归和明确标注的合成测试夹具。
+- `scripts/`：运行辅助与公开发布检查。
 
 ## 测试、安全与公开范围
 

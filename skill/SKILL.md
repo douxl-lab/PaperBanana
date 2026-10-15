@@ -3,9 +3,9 @@ name: paperbanana
 description: >-
   Generate scientific paper method, mechanism or architecture diagrams with PaperBanana's Retriever/Planner/Stylist/Visualizer/Critic engine. Use when the user explicitly asks for PaperBanana or a research-figure orchestrator delegates image generation to this installed engine. Preserve exact FigureSpec v1 science, candidate images, submitted prompts and written design for RFS handoff. Do not use as the general scientific-figure router, a real-data plotter, an independent TikZ compiler, a generic presentation designer, or a native editable-PPTX reconstruction backend.
 license: Apache-2.0
-compatibility: Installed PaperBanana engine checkout and configured, authorized provider for live generation; Python 3.10+ with jsonschema/Pillow for offline exchange; full generation tested on Python 3.12.
+compatibility: Installed PaperBanana checkout; authorized host with built-in image generation or configured provider for live generation; Python 3.10+ with jsonschema/Pillow for offline exchange and native coordination; provider generation tested on Python 3.12.
 metadata:
-  version: "0.5.0"
+  version: "0.6.0"
   category: "scientific-figure-engine"
 ---
 
@@ -15,10 +15,16 @@ Use PaperBanana **only** when explicitly requested or delegated by RFS. Keep the
 
 ## Resolve inputs and permissions
 
-- Run from the separately installed engine checkout; set `PAPERBANANA_ROOT` to its directory. The installed `skills/paperbanana` folder is an invocation manifest, **not** an independent runtime. Existing entrypoints live at `skill/run.py` and `skill/exchange.py`.
+- Run from the separately installed engine checkout; set `PAPERBANANA_ROOT` to its directory. The installed `skills/paperbanana` folder is an invocation manifest, **not** an independent runtime. Entrypoints live at `skill/run.py`, `skill/exchange.py` and `skill/native_host.py`.
 - Read the scientific source or canonical FigureSpec v1. Preserve the caller's modules, labels, formulas, edge endpoints/direction, groups, evidence, data and locked constraints; only permitted visual `design` fields may vary.
 - Do not send unpublished materials or invoke a paid provider without explicit authorization for this task/service and possible cost. An installed key or existing model profile does not establish permission or availability.
 - Read [exchange instructions](references/exchange.md) for request and bundle formats; if no compatible engine/model is available, report the blocker instead of pretending to have produced an image.
+
+## Choose one execution mode
+
+- **Native host:** when the current host provides built-in image generation, follow [native-host instructions](references/native-host.md). Run the fixed five stages through `skill/native_host.py`; explicitly execute host reasoning and the actual image tool. No external API key is needed by this adapter. Do not silently fall back to a provider or claim that the coordinator executes models.
+- **Provider engine:** use the paired RFS workflow below only with an available authorized provider.
+- Both modes retain science and real artifact bytes. Native receipts are local attestations, not provider exchange bundles or signed execution proof.
 
 ## Paired RFS workflow
 
